@@ -50,7 +50,7 @@ find_package(zstd CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 
 # Scripting — Lua + sol2 bindings
-find_package(Lua REQUIRED)
+find_package(unofficial-lua CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
 
 # AI / Navigation — Recast & Detour (navmesh generation and pathfinding)
@@ -75,11 +75,9 @@ target_link_libraries(Meridian PRIVATE
     flatbuffers::flatbuffers
     zstd::libzstd
     imgui::imgui
-    ${LUA_LIBRARIES}
+    unofficial::lua::lua
     sol2::sol2
     RecastNavigation::Recast
     RecastNavigation::Detour
     Taskflow::Taskflow
 )
-
-target_include_directories(Meridian PRIVATE ${LUA_INCLUDE_DIR})
