@@ -25,6 +25,40 @@ find_package(GameNetworkingSockets REQUIRED CONFIG)
 # Sparse volumetric data — OpenVDB / NanoVDB (GPU-side fluid & particle storage)
 find_package(OpenVDB REQUIRED)
 
+# World persistence: voxel chunks
+find_package(unofficial-lmdb CONFIG REQUIRED)
+
+# World persistence: entity/game state (pulls in sqlite3)
+find_package(SQLiteCpp REQUIRED)
+
+# Spatial audio — Steam Audio (HRTF, physics-based occlusion/reverb via ray casting)
+find_package(steam-audio CONFIG REQUIRED)
+
+# Math — GLM (GLSL-compatible, header-only)
+find_package(glm CONFIG REQUIRED)
+
+# Logging — spdlog (async, multi-sink)
+find_package(spdlog CONFIG REQUIRED)
+
+# Serialization — FlatBuffers (zero-copy, schema-driven)
+find_package(flatbuffers CONFIG REQUIRED)
+
+# Compression — zstd (chunk streaming and on-disk storage)
+find_package(zstd CONFIG REQUIRED)
+
+# Debug UI — Dear ImGui (Vulkan + SDL3 backends)
+find_package(imgui CONFIG REQUIRED)
+
+# Scripting — Lua + sol2 bindings
+find_package(Lua REQUIRED)
+find_package(sol2 CONFIG REQUIRED)
+
+# AI / Navigation — Recast & Detour (navmesh generation and pathfinding)
+find_package(RecastNavigation CONFIG REQUIRED)
+
+# Task scheduling — Taskflow (C++17 work-stealing task graph)
+find_package(Taskflow CONFIG REQUIRED)
+
 add_executable(Meridian src/main.cpp)
 
 target_link_libraries(Meridian PRIVATE
@@ -33,4 +67,19 @@ target_link_libraries(Meridian PRIVATE
     EnTT::EnTT
     GameNetworkingSockets::GameNetworkingSockets
     OpenVDB::openvdb
+    unofficial::lmdb::lmdb
+    SQLiteCpp
+    unofficial::steam-audio::phonon
+    glm::glm
+    spdlog::spdlog
+    flatbuffers::flatbuffers
+    zstd::libzstd
+    imgui::imgui
+    ${LUA_LIBRARIES}
+    sol2::sol2
+    RecastNavigation::Recast
+    RecastNavigation::Detour
+    Taskflow::Taskflow
 )
+
+target_include_directories(Meridian PRIVATE ${LUA_INCLUDE_DIR})
