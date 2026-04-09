@@ -6,6 +6,25 @@
     {
       "name": "sdl3",
       "features": ["vulkan"]
-    }
+    },
+    "joltphysics",
+    "entt",
+    "gamenetworkingsockets",
+    "openvdb",
+    "lmdb",
+    "sqlitecpp",
+    "steam-audio",
+    "glm",
+    "spdlog",
+    "flatbuffers",
+    "zstd",
+    {
+      "name": "imgui",
+      "features": ["vulkan-binding", "sdl3-binding"]
+    },
+    "lua",
+    "sol2",
+    "recastnavigation",
+    "taskflow"
   ]
 }
