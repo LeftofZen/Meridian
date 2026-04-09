@@ -9,7 +9,7 @@ To handle dynamic entities (NPCs, players) alongside a static world, we utilize 
  * **Top-Level (TLAS):** Contains instances of BLAS objects with transform matrices.
    * *Implementation Note:* Update only the TLAS matrices during the simulation loop to avoid expensive geometry rebuilds.
 ## 2. Terrain Data: Sparse Voxel Octree (SVO)
-Traditional meshes are unsuitable for infinite, editable terrain. We use an **SVO** to represent the world. The world heightmap is procudrally generated in chunks using the methods outlined in this blog post: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
+Traditional meshes are unsuitable for infinite, editable terrain. We use an **SVO** to represent the world. The world heightmap is procedurally generated in chunks using the methods outlined in this blog post: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
  * **Efficiency:** O(\log n) traversal using a **Digital Differential Analyzer (DDA)** algorithm.
  * **Editability:** Real-time "digging" or "building" only requires updating local leaf nodes and propagating values upward.
  * **LOD:** The tree depth inherently provides Levels of Detail; distant rays can stop at higher-level nodes to save cycles.
