@@ -4,19 +4,19 @@ These instructions define how GitHub Copilot should assist with this project. Th
 
 ## 🧠 Context
 
-- **Project Type**: System Library / Game Engine / Cross-Platform App / CLI Tool
+- **Project Type**: Game Engine
 - **Language**: C++
-- **Framework / Libraries**: STL / Boost / Qt / CMake / GoogleTest
+- **Framework / Libraries**: STL / CMake / GoogleTest
 - **Architecture**: Modular / Layered / ECS / RAII / OOP / Component-Based
 
 ## 🔧 General Guidelines
 
-- Use modern C++ (C++17 or C++20 where supported).
+- Use modern C++ (C++20 or C++23 where supported).
 - Prefer RAII for resource management.
 - Favor smart pointers (`std::unique_ptr`, `std::shared_ptr`) over raw pointers.
 - Use `const`, `constexpr`, and `noexcept` to express intent.
 - Keep headers clean—avoid logic in header files.
-- Use `clang-format` or `.editorconfig` for consistent formatting.
+- Use `clang-format` for consistent formatting.
 - Favor readability, modularity, and exception safety.
 
 ## 📁 File Structure
@@ -47,6 +47,8 @@ build/
 - Encapsulate with classes and clean header/implementation separation.
 - Favor the Rule of 5 or Rule of 0 when managing custom types.
 - Use interfaces (`abstract class`) for testability and polymorphism.
+- Use composition-over-inheritance.
+- Use SOLID design principles.
 - Prefer `enum class` over unscoped enums.
 - Use assertions (`assert()`) and logging macros for debug checks.
 - Use CMake targets and `target_include_directories` for modular build config.
