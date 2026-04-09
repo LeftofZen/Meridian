@@ -371,7 +371,8 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 ## Implementation Roadmap
 
 ### Phase 0 — Foundation (Current)
- - [x] SDL3 window + Vulkan surface initialisation
+ - [x] SDL3 window creation
+ - [ ] Vulkan surface initialisation
  - [ ] Integrate Vulkan device/swapchain setup
  - [ ] Add basic render loop (clear colour, present)
  - [ ] Integrate **spdlog** logging and **Dear ImGui** debug overlay
