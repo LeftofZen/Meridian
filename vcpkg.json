@@ -1,0 +1,11 @@
+{
+  "name": "meridian",
+  "version-string": "0.1.0",
+  "description": "A next-gen game engine using SDL3 and Vulkan",
+  "dependencies": [
+    {
+      "name": "sdl3",
+      "features": ["vulkan"]
+    }
+  ]
+}
