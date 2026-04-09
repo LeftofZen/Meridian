@@ -183,17 +183,17 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 ### Spatial Queries — SQLite R-tree + EnTT views (in-memory)
 
 **Selected:** SQLite3 R-tree extension for persistent spatial index; EnTT views for live in-memory queries
-**No additional library required**
+**No additional library required beyond SQLite support already used for persistence**
 
 | Candidate | Verdict | Notes |
 |---|---|---|
-| **SQLite R-tree extension** | ✅ **Selected (persistent)** | Built into sqlite3 (enabled via `rtree` feature in vcpkg), handles bounding-box overlap queries on saved entity state |
+| **SQLite R-tree extension** | ✅ **Selected (persistent)** | Uses SQLite's R-tree virtual table support (`USING rtree`) to handle bounding-box overlap queries on saved entity state |
 | **EnTT views/groups** | ✅ **Selected (in-memory)** | Sparse-set iteration with component filters serves as the live ECS query layer |
 | Boost.Geometry | Rejected | Overkill; adds heavy Boost dependency for a feature covered by SQLite and EnTT |
 
 **Key reasons:**
 - In-memory spatial queries (nearest entity, frustum cull, physics broad phase) are handled by Jolt Physics (broad phase BVH) and EnTT component views — no extra library needed
-- Persistent queries (spawn tables, saved region triggers) naturally fit the SQLite R-tree that is already present for entity persistence
+- Persistent queries (spawn tables, saved region triggers) naturally fit the SQLite R-tree used for entity persistence
 
 ---
 
