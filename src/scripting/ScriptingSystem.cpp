@@ -25,7 +25,7 @@ bool ScriptingSystem::init()
     m_lua.set_function("log_warn", [](const std::string& msg) { MRD_WARN("[Lua] {}", msg); });
 
     m_initialized = true;
-    MRD_INFO("Lua scripting system ready  (sol2)");
+    MRD_INFO("Lua scripting system ready (sol2)");
     return true;
 }
 

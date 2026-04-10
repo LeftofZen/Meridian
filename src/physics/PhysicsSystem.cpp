@@ -62,7 +62,7 @@ bool PhysicsSystem::init()
         *m_objVsBPFilter,
         *m_objLayerPairFilter);
 
-    MRD_INFO("Jolt Physics ready  (max bodies: {}, threads: {})",
+    MRD_INFO("Jolt Physics ready (max bodies: {}, threads: {})",
         m_config.maxBodies, std::thread::hardware_concurrency() - 1);
     return true;
 }

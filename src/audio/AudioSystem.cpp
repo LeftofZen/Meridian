@@ -25,7 +25,7 @@ bool AudioSystem::init()
         return false;
     }
 
-    MRD_INFO("Steam Audio context ready  ({}Hz, {} frames)", m_config.samplingRate,
+    MRD_INFO("Steam Audio context ready ({}Hz, {} frames)", m_config.samplingRate,
         m_config.frameSize);
     return true;
 }

@@ -46,7 +46,7 @@ bool VulkanContext::init(SDL_Window* window)
     if (!createSwapchain(window)) return false;
     if (!createSwapchainImageViews()) return false;
 
-    MRD_INFO("Vulkan context ready  (graphics queue family {}, compute {})",
+    MRD_INFO("Vulkan context ready (graphics queue family {}, compute {})",
         m_graphicsQueueFamily.value(),
         hasComputeSupport() ? std::to_string(m_computeQueueFamily.value()) : "n/a");
     return true;
@@ -328,7 +328,7 @@ bool VulkanContext::createSwapchain(SDL_Window* window)
     m_swapchainImageFormat = surfaceFormat.format;
     m_swapchainExtent = extent;
 
-    MRD_INFO("VkSwapchainKHR created  ({} images, {}x{})",
+    MRD_INFO("VkSwapchainKHR created ({} images, {}x{})",
         imgCount, extent.width, extent.height);
     return true;
 }
