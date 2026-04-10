@@ -13,6 +13,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Core windowing / rendering
 find_package(SDL3 REQUIRED CONFIG)
 
+# Vulkan dynamic loader (volk) — avoids link-time dependency on libvulkan.so
+find_package(volk CONFIG REQUIRED)
+
 # Physics — Jolt Physics (multi-threaded, deterministic, C++20-friendly)
 find_package(Jolt REQUIRED CONFIG)
 
@@ -59,10 +62,26 @@ find_package(RecastNavigation CONFIG REQUIRED)
 # Task scheduling — Taskflow (C++17 work-stealing task graph)
 find_package(Taskflow CONFIG REQUIRED)
 
-add_executable(Meridian src/main.cpp)
+set(MERIDIAN_SOURCES
+    src/main.cpp
+    src/core/Engine.cpp
+    src/window/Window.cpp
+    src/renderer/VulkanContext.cpp
+    src/audio/AudioSystem.cpp
+    src/physics/PhysicsSystem.cpp
+    src/networking/NetworkSystem.cpp
+    src/scripting/ScriptingSystem.cpp
+)
+
+add_executable(Meridian ${MERIDIAN_SOURCES})
+
+target_include_directories(Meridian PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 
 target_link_libraries(Meridian PRIVATE
     SDL3::SDL3
+    volk::volk
     Jolt::Jolt
     EnTT::EnTT
     GameNetworkingSockets::GameNetworkingSockets
