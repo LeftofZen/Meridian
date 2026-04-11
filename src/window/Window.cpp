@@ -2,6 +2,8 @@
 
 #include "core/Logger.hpp"
 
+#include <SDL3/SDL.h>
+
 namespace Meridian {
 
 Window::Window(const WindowConfig& config) : m_config(config) {}
@@ -38,8 +40,8 @@ void Window::shutdown()
 {
     if (m_window) {
         SDL_DestroyWindow(m_window);
-        m_window = nullptr;
         SDL_Quit();
+        m_window = nullptr;
     }
 }
 

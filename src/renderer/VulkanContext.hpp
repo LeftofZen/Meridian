@@ -6,10 +6,9 @@
 
 #include <array>
 #include <optional>
-#include <string>
 #include <vector>
 
-struct SDL_Window; // forward declaration
+#include <string>
 
 namespace Meridian {
 
@@ -28,10 +27,9 @@ public:
     VulkanContext(VulkanContext&&) = delete;
     VulkanContext& operator=(VulkanContext&&) = delete;
 
-    [[nodiscard]] bool init(SDL_Window* window);
+    [[nodiscard]] bool init(void* windowHandle);
     void shutdown();
 
-    // Accessors for downstream use (render-pass, pipeline creation, etc.)
     [[nodiscard]] VkInstance getInstance() const noexcept { return m_instance; }
     [[nodiscard]] VkPhysicalDevice getPhysicalDevice() const noexcept { return m_physicalDevice; }
     [[nodiscard]] VkDevice getDevice() const noexcept { return m_device; }
@@ -53,7 +51,6 @@ public:
     }
 
 private:
-    // Initialisation stages
     [[nodiscard]] bool createInstance();
     [[nodiscard]] bool setupDebugMessenger();
     [[nodiscard]] bool createSurface(SDL_Window* window);
@@ -64,7 +61,6 @@ private:
 
     void destroySwapchain();
 
-    // Queue family discovery
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsFamily;
         std::optional<uint32_t> presentFamily;
@@ -80,7 +76,6 @@ private:
     [[nodiscard]] bool isDeviceSuitable(VkPhysicalDevice device) const;
     [[nodiscard]] bool checkDeviceExtensionSupport(VkPhysicalDevice device) const;
 
-    // Swapchain helpers
     struct SwapchainSupportDetails {
         VkSurfaceCapabilitiesKHR capabilities{};
         std::vector<VkSurfaceFormatKHR> formats;
@@ -96,7 +91,6 @@ private:
         const VkSurfaceCapabilitiesKHR& caps,
         SDL_Window* window);
 
-    // Debug messenger callback
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT type,
@@ -124,6 +118,7 @@ private:
     std::optional<uint32_t> m_graphicsQueueFamily;
     std::optional<uint32_t> m_computeQueueFamily;
     std::optional<uint32_t> m_presentQueueFamily;
+    bool m_validationEnabled{false};
 
     static constexpr std::array<const char*, 1> k_validationLayers{
         "VK_LAYER_KHRONOS_validation"};

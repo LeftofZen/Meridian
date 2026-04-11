@@ -1,7 +1,7 @@
 #pragma once
 
-#include <steam/steamnetworkingsockets.h>
 #include <steam/isteamnetworkingutils.h>
+#include <steam/steamnetworkingsockets.h>
 
 namespace Meridian {
 
@@ -20,6 +20,7 @@ public:
 
     [[nodiscard]] ISteamNetworkingSockets* getSockets() const noexcept { return m_sockets; }
     [[nodiscard]] ISteamNetworkingUtils* getUtils() const noexcept { return m_utils; }
+    [[nodiscard]] bool isInitialised() const noexcept { return m_initialized; }
 
 private:
     ISteamNetworkingSockets* m_sockets{nullptr};

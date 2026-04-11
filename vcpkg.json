@@ -2,6 +2,7 @@
   "name": "meridian",
   "version-string": "0.1.0",
   "description": "A next-gen game engine using SDL3 and Vulkan",
+  "builtin-baseline": "36118ef68885436fd2a999188216337365856ad4",
   "dependencies": [
     {
       "name": "sdl3",
@@ -11,21 +12,10 @@
     "joltphysics",
     "entt",
     "gamenetworkingsockets",
-    "openvdb",
-    "lmdb",
-    "sqlitecpp",
     "steam-audio",
-    "glm",
     "spdlog",
-    "flatbuffers",
-    "zstd",
-    {
-      "name": "imgui",
-      "features": ["vulkan-binding", "sdl3-binding"]
-    },
     "lua",
     "sol2",
-    "recastnavigation",
     "taskflow"
   ]
 }

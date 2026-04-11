@@ -5,8 +5,8 @@
 namespace Meridian {
 
 struct AudioConfig {
-    int samplingRate{44100};
-    int frameSize{1024};
+    int samplingRate{48000};
+    int frameSize{512};
 };
 
 class AudioSystem {
@@ -27,11 +27,13 @@ public:
     {
         return m_audioSettings;
     }
+    [[nodiscard]] bool isInitialised() const noexcept { return m_initialised; }
 
 private:
     AudioConfig m_config;
     IPLContext m_context{nullptr};
     IPLAudioSettings m_audioSettings{};
+    bool m_initialised{false};
 };
 
 } // namespace Meridian

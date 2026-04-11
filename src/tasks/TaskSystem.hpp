@@ -19,7 +19,8 @@ public:
     [[nodiscard]] bool init()
     {
         m_executor = std::make_unique<tf::Executor>();
-        return m_executor != nullptr;
+        m_initialized = (m_executor != nullptr);
+        return m_initialized;
     }
 
     void shutdown()
@@ -28,16 +29,19 @@ public:
             m_executor->wait_for_all();
             m_executor.reset();
         }
+        m_initialized = false;
     }
 
     [[nodiscard]] tf::Executor& getExecutor() noexcept { return *m_executor; }
     [[nodiscard]] const tf::Executor& getExecutor() const noexcept { return *m_executor; }
 
-    // Convenience: run a taskflow graph and wait for completion
     void run(tf::Taskflow& flow) { m_executor->run(flow).wait(); }
+
+    [[nodiscard]] bool isInitialised() const noexcept { return m_initialized; }
 
 private:
     std::unique_ptr<tf::Executor> m_executor;
+    bool m_initialized{false};
 };
 
 } // namespace Meridian

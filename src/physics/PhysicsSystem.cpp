@@ -2,13 +2,13 @@
 
 #include "core/Logger.hpp"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <thread>
 
 namespace Meridian {
 
-// Simple trace callback used by Jolt for internal logging
 static void joltTrace(const char* fmt, ...)
 {
     va_list args;
@@ -19,16 +19,12 @@ static void joltTrace(const char* fmt, ...)
     MRD_TRACE("[Jolt] {}", buf);
 }
 
-// ─── construction ────────────────────────────────────────────────────────────
-
 PhysicsSystem::PhysicsSystem(const PhysicsConfig& config) : m_config(config) {}
 
 PhysicsSystem::~PhysicsSystem()
 {
     shutdown();
 }
-
-// ─── init / shutdown ─────────────────────────────────────────────────────────
 
 bool PhysicsSystem::init()
 {
@@ -42,15 +38,22 @@ bool PhysicsSystem::init()
     const uint32_t allocBytes = m_config.tempAllocatorSizeMB * 1024U * 1024U;
     m_tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(allocBytes);
 
-    // Job system: 0 = use hardware_concurrency - 1 threads
+    const unsigned int hardwareThreads = std::max(2U, std::thread::hardware_concurrency());
+    const int workerThreads = static_cast<int>(hardwareThreads - 1U);
     m_jobSystem = std::make_unique<JPH::JobSystemThreadPool>(
         JPH::cMaxPhysicsJobs,
         JPH::cMaxPhysicsBarriers,
-        static_cast<int>(std::thread::hardware_concurrency()) - 1);
+        workerThreads);
 
     m_bpLayerInterface = std::make_unique<BPLayerInterfaceImpl>();
-    m_objVsBPFilter = std::make_unique<ObjectVsBPLayerFilterImpl>();
-    m_objLayerPairFilter = std::make_unique<ObjectLayerPairFilterImpl>();
+    m_objLayerPairFilter = std::make_unique<JPH::ObjectLayerPairFilterTable>(Layers::NUM_LAYERS);
+    m_objLayerPairFilter->EnableCollision(Layers::NON_MOVING, Layers::MOVING);
+    m_objLayerPairFilter->EnableCollision(Layers::MOVING, Layers::MOVING);
+    m_objVsBPFilter = std::make_unique<JPH::ObjectVsBroadPhaseLayerFilterTable>(
+        *m_bpLayerInterface,
+        BroadPhaseLayers::NUM_LAYERS,
+        *m_objLayerPairFilter,
+        Layers::NUM_LAYERS);
 
     m_physicsSystem = std::make_unique<JPH::PhysicsSystem>();
     m_physicsSystem->Init(
@@ -62,13 +65,18 @@ bool PhysicsSystem::init()
         *m_objVsBPFilter,
         *m_objLayerPairFilter);
 
+    m_initialised = true;
     MRD_INFO("Jolt Physics ready (max bodies: {}, threads: {})",
-        m_config.maxBodies, std::thread::hardware_concurrency() - 1);
+        m_config.maxBodies, workerThreads);
     return true;
 }
 
 void PhysicsSystem::shutdown()
 {
+    if (!m_initialised) {
+        return;
+    }
+
     m_physicsSystem.reset();
     m_objLayerPairFilter.reset();
     m_objVsBPFilter.reset();
@@ -79,12 +87,15 @@ void PhysicsSystem::shutdown()
     JPH::UnregisterTypes();
     delete JPH::Factory::sInstance; // NOLINT(cppcoreguidelines-owning-memory)
     JPH::Factory::sInstance = nullptr;
+    m_initialised = false;
 }
-
-// ─── update ──────────────────────────────────────────────────────────────────
 
 void PhysicsSystem::update(float deltaTimeSeconds, int collisionSteps)
 {
+    if (!m_initialised || !m_physicsSystem) {
+        return;
+    }
+
     m_physicsSystem->Update(
         deltaTimeSeconds, collisionSteps, m_tempAllocator.get(), m_jobSystem.get());
 }

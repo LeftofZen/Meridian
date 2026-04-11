@@ -1,27 +1,21 @@
 #pragma once
 
-// Jolt requires these before its headers
 #include <Jolt/Jolt.h>
-
-JPH_SUPPRESS_WARNINGS_PUSH
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
-#include <Jolt/Physics/Collision/BroadPhase/ObjectVsBroadPhaseLayerFilter.h>
+#include <Jolt/Physics/Collision/BroadPhase/ObjectVsBroadPhaseLayerFilterTable.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
-#include <Jolt/Physics/Collision/ObjectLayerPairFilter.h>
+#include <Jolt/Physics/Collision/ObjectLayerPairFilterTable.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
-JPH_SUPPRESS_WARNINGS_POP
 
 #include <cstdint>
 #include <memory>
 
 namespace Meridian {
-
-// ─── object / broadphase layer definitions ───────────────────────────────────
 
 namespace Layers {
     static constexpr JPH::ObjectLayer NON_MOVING{0};
@@ -35,7 +29,6 @@ namespace BroadPhaseLayers {
     static constexpr uint32_t NUM_LAYERS{2};
 } // namespace BroadPhaseLayers
 
-// Maps object layers to broad-phase layers
 class BPLayerInterfaceImpl final : public JPH::BroadPhaseLayerInterface {
 public:
     BPLayerInterfaceImpl()
@@ -71,45 +64,9 @@ private:
     JPH::BroadPhaseLayer m_objectToBP[Layers::NUM_LAYERS]{};
 };
 
-class ObjectVsBPLayerFilterImpl final : public JPH::ObjectVsBroadPhaseLayerFilter {
-public:
-    [[nodiscard]] bool ShouldCollide(
-        JPH::ObjectLayer layer,
-        JPH::BroadPhaseLayer bpLayer) const noexcept override
-    {
-        switch (layer) {
-            case Layers::NON_MOVING:
-                return bpLayer == BroadPhaseLayers::MOVING;
-            case Layers::MOVING:
-                return true;
-            default:
-                return false;
-        }
-    }
-};
-
-class ObjectLayerPairFilterImpl final : public JPH::ObjectLayerPairFilter {
-public:
-    [[nodiscard]] bool ShouldCollide(
-        JPH::ObjectLayer obj1,
-        JPH::ObjectLayer obj2) const noexcept override
-    {
-        switch (obj1) {
-            case Layers::NON_MOVING:
-                return obj2 == Layers::MOVING;
-            case Layers::MOVING:
-                return true;
-            default:
-                return false;
-        }
-    }
-};
-
-// ─── PhysicsSystem ───────────────────────────────────────────────────────────
-
 struct PhysicsConfig {
     uint32_t maxBodies{65536};
-    uint32_t numBodyMutexes{0}; // 0 = auto
+    uint32_t numBodyMutexes{0};
     uint32_t maxBodyPairs{65536};
     uint32_t maxContactConstraints{16384};
     uint32_t tempAllocatorSizeMB{10};
@@ -129,7 +86,6 @@ public:
     void shutdown();
 
     void update(float deltaTimeSeconds, int collisionSteps = 1);
-
     [[nodiscard]] JPH::PhysicsSystem& getSystem() noexcept { return *m_physicsSystem; }
     [[nodiscard]] const JPH::PhysicsSystem& getSystem() const noexcept
     {
@@ -139,16 +95,17 @@ public:
     {
         return m_physicsSystem->GetBodyInterface();
     }
+    [[nodiscard]] bool isInitialised() const noexcept { return m_initialised; }
 
 private:
     PhysicsConfig m_config;
-
     std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;
     std::unique_ptr<JPH::JobSystemThreadPool> m_jobSystem;
     std::unique_ptr<BPLayerInterfaceImpl> m_bpLayerInterface;
-    std::unique_ptr<ObjectVsBPLayerFilterImpl> m_objVsBPFilter;
-    std::unique_ptr<ObjectLayerPairFilterImpl> m_objLayerPairFilter;
+    std::unique_ptr<JPH::ObjectVsBroadPhaseLayerFilterTable> m_objVsBPFilter;
+    std::unique_ptr<JPH::ObjectLayerPairFilterTable> m_objLayerPairFilter;
     std::unique_ptr<JPH::PhysicsSystem> m_physicsSystem;
+    bool m_initialised{false};
 };
 
 } // namespace Meridian

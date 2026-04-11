@@ -25,6 +25,7 @@ bool AudioSystem::init()
         return false;
     }
 
+    m_initialised = true;
     MRD_INFO("Steam Audio context ready ({}Hz, {} frames)", m_config.samplingRate,
         m_config.frameSize);
     return true;
@@ -36,6 +37,8 @@ void AudioSystem::shutdown()
         iplContextRelease(&m_context);
         m_context = nullptr;
     }
+
+    m_initialised = false;
 }
 
 } // namespace Meridian

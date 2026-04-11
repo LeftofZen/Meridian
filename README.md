@@ -1,6 +1,19 @@
 # Meridian
 A next-gen game engine
 
+## Build
+
+Meridian currently supports only Visual Studio 2026 with the MSVC 19.50 toolset.
+
+From a Visual Studio 2026 Developer PowerShell:
+
+```powershell
+cmake --preset vs2026-debug
+cmake --build --preset vs2026-debug
+```
+
+This writes generated files to the local `build/` directory, which is ignored by Git.
+
 # Architecture Guide: Path Traced Procedural Engine
 This document outlines the core data structures and acceleration strategies for implementing a high-performance path tracer within a procedural, infinite, and simulation-heavy environment.
 ## 1. High-Level Architecture: Two-Level Acceleration

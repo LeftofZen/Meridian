@@ -1,6 +1,9 @@
 # CMake build directory
 build/
+build-*/
 out/
+.vs/
+CMakeUserPresets.json
 
 # vcpkg installed packages and build trees (managed per-machine)
 vcpkg_installed/
@@ -43,6 +46,14 @@ vcpkg_installed/
 *.exe
 *.out
 *.app
+
+# Ninja and CMake generated state
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+cmake_install.cmake
+compile_commands.json
 
 # debug information files
 *.dwo

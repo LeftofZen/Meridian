@@ -20,7 +20,6 @@ bool ScriptingSystem::init()
         sol::lib::io,
         sol::lib::os);
 
-    // Register a simple engine log function accessible from Lua
     m_lua.set_function("log_info", [](const std::string& msg) { MRD_INFO("[Lua] {}", msg); });
     m_lua.set_function("log_warn", [](const std::string& msg) { MRD_WARN("[Lua] {}", msg); });
 

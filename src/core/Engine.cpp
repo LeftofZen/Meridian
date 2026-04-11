@@ -10,7 +10,7 @@ Engine::~Engine()
 bool Engine::init()
 {
     Logger::init();
-    MRD_INFO("─── Meridian engine starting ───────────────────────────────");
+    MRD_INFO("=== Meridian engine starting ===");
 
     // ── Task system (used by physics and other subsystems) ────────────────
     m_tasks = std::make_unique<TaskSystem>();
@@ -18,7 +18,7 @@ bool Engine::init()
         MRD_CRITICAL("TaskSystem init failed");
         return false;
     }
-    MRD_INFO("✓ TaskSystem");
+    MRD_INFO("[OK] TaskSystem");
 
     // ── Window ────────────────────────────────────────────────────────────
     m_window = std::make_unique<Window>(WindowConfig{.title = "Meridian", .width = 1280, .height = 720});
@@ -26,7 +26,7 @@ bool Engine::init()
         MRD_CRITICAL("Window init failed");
         return false;
     }
-    MRD_INFO("✓ Window");
+    MRD_INFO("[OK] Window");
 
     // ── Vulkan renderer ───────────────────────────────────────────────────
     m_vulkan = std::make_unique<VulkanContext>(
@@ -35,7 +35,7 @@ bool Engine::init()
         MRD_CRITICAL("VulkanContext init failed");
         return false;
     }
-    MRD_INFO("✓ VulkanContext  (compute support: {})",
+    MRD_INFO("[OK] VulkanContext (compute support: {})",
         m_vulkan->hasComputeSupport() ? "yes" : "no");
 
     // ── Audio ─────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ bool Engine::init()
         MRD_CRITICAL("AudioSystem init failed");
         return false;
     }
-    MRD_INFO("✓ AudioSystem");
+    MRD_INFO("[OK] AudioSystem");
 
     // ── Physics ───────────────────────────────────────────────────────────
     m_physics = std::make_unique<PhysicsSystem>();
@@ -52,7 +52,7 @@ bool Engine::init()
         MRD_CRITICAL("PhysicsSystem init failed");
         return false;
     }
-    MRD_INFO("✓ PhysicsSystem");
+    MRD_INFO("[OK] PhysicsSystem");
 
     // ── ECS ───────────────────────────────────────────────────────────────
     m_ecs = std::make_unique<ECSSystem>();
@@ -60,7 +60,7 @@ bool Engine::init()
         MRD_CRITICAL("ECSSystem init failed");
         return false;
     }
-    MRD_INFO("✓ ECSSystem");
+    MRD_INFO("[OK] ECSSystem");
 
     // ── Networking ────────────────────────────────────────────────────────
     m_network = std::make_unique<NetworkSystem>();
@@ -68,7 +68,7 @@ bool Engine::init()
         MRD_CRITICAL("NetworkSystem init failed");
         return false;
     }
-    MRD_INFO("✓ NetworkSystem");
+    MRD_INFO("[OK] NetworkSystem");
 
     // ── Scripting ─────────────────────────────────────────────────────────
     m_scripting = std::make_unique<ScriptingSystem>();
@@ -76,9 +76,9 @@ bool Engine::init()
         MRD_CRITICAL("ScriptingSystem init failed");
         return false;
     }
-    MRD_INFO("✓ ScriptingSystem");
+    MRD_INFO("[OK] ScriptingSystem");
 
-    MRD_INFO("─── All systems operational ────────────────────────────────");
+    MRD_INFO("=== All systems operational ===");
     return true;
 }
 
@@ -99,7 +99,7 @@ void Engine::shutdown()
         return;
     }
 
-    MRD_INFO("─── Meridian engine shutting down ──────────────────────────");
+    MRD_INFO("=== Meridian engine shutting down ===");
 
     // Reset in reverse init order; each destructor calls its own shutdown()
     m_scripting.reset();
@@ -111,7 +111,7 @@ void Engine::shutdown()
     m_window.reset();
     m_tasks.reset();
 
-    MRD_INFO("─── Shutdown complete ──────────────────────────────────────");
+    MRD_INFO("=== Shutdown complete ===");
 }
 
 } // namespace Meridian

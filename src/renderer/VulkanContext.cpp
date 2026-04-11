@@ -12,8 +12,6 @@
 
 namespace Meridian {
 
-// ─── construction / destruction ─────────────────────────────────────────────
-
 VulkanContext::VulkanContext(const VulkanContextConfig& config) : m_config(config) {}
 
 VulkanContext::~VulkanContext()
@@ -21,11 +19,15 @@ VulkanContext::~VulkanContext()
     shutdown();
 }
 
-// ─── public interface ────────────────────────────────────────────────────────
-
-bool VulkanContext::init(SDL_Window* window)
+bool VulkanContext::init(void* windowHandle)
 {
-    // Initialise volk (dynamic Vulkan loader – no link-time libvulkan required)
+    auto* window = static_cast<SDL_Window*>(windowHandle);
+
+    if (window == nullptr) {
+        MRD_ERROR("Renderer init failed: window handle was null");
+        return false;
+    }
+
     if (volkInitialize() != VK_SUCCESS) {
         MRD_ERROR("volk: failed to find Vulkan loader (is a Vulkan driver installed?)");
         return false;
@@ -34,7 +36,7 @@ bool VulkanContext::init(SDL_Window* window)
     if (!createInstance()) return false;
     volkLoadInstance(m_instance);
 
-    if (m_config.enableValidation && !setupDebugMessenger()) {
+    if (m_validationEnabled && !setupDebugMessenger()) {
         MRD_WARN("Vulkan validation layers requested but debug messenger setup failed");
     }
 
@@ -74,11 +76,8 @@ void VulkanContext::shutdown()
     }
 }
 
-// ─── private: initialisation stages ─────────────────────────────────────────
-
 bool VulkanContext::createInstance()
 {
-    // Collect extensions required by SDL3
     uint32_t sdlExtCount = 0;
     const char* const* sdlExts = SDL_Vulkan_GetInstanceExtensions(&sdlExtCount);
     if (!sdlExts) {
@@ -88,8 +87,7 @@ bool VulkanContext::createInstance()
 
     std::vector<const char*> extensions(sdlExts, sdlExts + sdlExtCount);
 
-    // Check validation layer availability before deciding on extensions
-    bool validationEnabled = false;
+    m_validationEnabled = false;
     if (m_config.enableValidation) {
         uint32_t layerCount = 0;
         vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
@@ -98,12 +96,12 @@ bool VulkanContext::createInstance()
 
         for (const auto& layer : layers) {
             if (std::strcmp(layer.layerName, k_validationLayers[0]) == 0) {
-                validationEnabled = true;
+                m_validationEnabled = true;
                 break;
             }
         }
 
-        if (validationEnabled) {
+        if (m_validationEnabled) {
             extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         } else {
             MRD_WARN("Validation layer '{}' not available; running without validation",
@@ -126,12 +124,11 @@ bool VulkanContext::createInstance()
     createInfo.ppEnabledExtensionNames = extensions.data();
 
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
-    if (validationEnabled) {
+    if (m_validationEnabled) {
         createInfo.enabledLayerCount = static_cast<uint32_t>(k_validationLayers.size());
         createInfo.ppEnabledLayerNames = k_validationLayers.data();
 
-        debugCreateInfo.sType =
-            VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
         debugCreateInfo.messageSeverity =
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
@@ -193,7 +190,6 @@ bool VulkanContext::pickPhysicalDevice()
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(m_instance, &deviceCount, devices.data());
 
-    // Prefer discrete GPU
     VkPhysicalDevice fallback = VK_NULL_HANDLE;
     for (const auto& dev : devices) {
         if (!isDeviceSuitable(dev)) continue;
@@ -376,8 +372,6 @@ void VulkanContext::destroySwapchain()
     }
 }
 
-// ─── private: helpers ────────────────────────────────────────────────────────
-
 VulkanContext::QueueFamilyIndices VulkanContext::findQueueFamilies(
     VkPhysicalDevice device) const
 {
@@ -396,7 +390,6 @@ VulkanContext::QueueFamilyIndices VulkanContext::findQueueFamilies(
             indices.graphicsFamily = i;
         }
 
-        // Prefer a dedicated compute queue
         if (!indices.computeFamily.has_value() &&
             (family.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U) {
             indices.computeFamily = i;
@@ -487,7 +480,7 @@ VkPresentModeKHR VulkanContext::chooseSwapPresentMode(
     for (const auto& mode : modes) {
         if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
     }
-    return VK_PRESENT_MODE_FIFO_KHR; // always guaranteed
+    return VK_PRESENT_MODE_FIFO_KHR;
 }
 
 VkExtent2D VulkanContext::chooseSwapExtent(
