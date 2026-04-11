@@ -19,10 +19,8 @@ VulkanContext::~VulkanContext()
     shutdown();
 }
 
-bool VulkanContext::init(void* windowHandle)
+bool VulkanContext::init(SDL_Window* window)
 {
-    auto* window = static_cast<SDL_Window*>(windowHandle);
-
     if (window == nullptr) {
         MRD_ERROR("Renderer init failed: window handle was null");
         return false;
@@ -239,9 +237,21 @@ bool VulkanContext::createLogicalDevice()
         queueCreateInfos.push_back(qi);
     }
 
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(m_physicalDevice, &supportedFeatures);
+
     VkPhysicalDeviceFeatures deviceFeatures{};
-    deviceFeatures.samplerAnisotropy = VK_TRUE;
-    deviceFeatures.fillModeNonSolid = VK_TRUE;
+    if (supportedFeatures.samplerAnisotropy == VK_TRUE) {
+        deviceFeatures.samplerAnisotropy = VK_TRUE;
+    } else {
+        MRD_WARN("Physical device does not support sampler anisotropy; leaving it disabled");
+    }
+
+    if (supportedFeatures.fillModeNonSolid == VK_TRUE) {
+        deviceFeatures.fillModeNonSolid = VK_TRUE;
+    } else {
+        MRD_WARN("Physical device does not support non-solid fill modes; leaving them disabled");
+    }
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

@@ -6,6 +6,8 @@ A next-gen game engine.
 
 Meridian currently supports only Visual Studio 2026 with the MSVC 19.50 toolset.
 
+Set `VCPKG_ROOT` to your vcpkg checkout before configuring. The VS Code build task also falls back to a sibling checkout at `../vcpkg` if present.
+
 From a Visual Studio 2026 Developer PowerShell:
 
 ```powershell

@@ -27,7 +27,7 @@ public:
     VulkanContext(VulkanContext&&) = delete;
     VulkanContext& operator=(VulkanContext&&) = delete;
 
-    [[nodiscard]] bool init(void* windowHandle);
+    [[nodiscard]] bool init(SDL_Window* windowHandle);
     void shutdown();
 
     [[nodiscard]] VkInstance getInstance() const noexcept { return m_instance; }

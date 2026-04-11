@@ -23,10 +23,18 @@ find_package(volk CONFIG REQUIRED)
 find_package(Jolt REQUIRED CONFIG)
 find_package(EnTT REQUIRED CONFIG)
 find_package(GameNetworkingSockets REQUIRED CONFIG)
+find_package(OpenVDB REQUIRED)
+find_package(unofficial-lmdb CONFIG REQUIRED)
+find_package(SQLiteCpp REQUIRED)
 find_package(steam-audio CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+find_package(flatbuffers CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 find_package(unofficial-lua CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
+find_package(RecastNavigation CONFIG REQUIRED)
 find_package(Taskflow CONFIG REQUIRED)
 
 set(MERIDIAN_SOURCES
@@ -52,13 +60,26 @@ target_link_libraries(Meridian PRIVATE
     Jolt::Jolt
     EnTT::EnTT
     GameNetworkingSockets::GameNetworkingSockets
+    OpenVDB::openvdb
+    unofficial::lmdb::lmdb
+    SQLiteCpp
     unofficial::steam-audio::phonon
+    glm::glm
     spdlog::spdlog
+    flatbuffers::flatbuffers
+    zstd::libzstd
+    imgui::imgui
     unofficial::lua::lua
     sol2::sol2
+    RecastNavigation::Recast
+    RecastNavigation::Detour
     Taskflow::Taskflow
 )
 
 target_compile_options(Meridian PRIVATE /W4 /permissive-)
 
-target_compile_definitions(Meridian PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(Meridian PRIVATE
+    SOL_ALL_SAFETIES_ON=1
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)

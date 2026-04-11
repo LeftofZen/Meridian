@@ -1,5 +1,7 @@
 #include "core/Engine.hpp"
 
+#include <SDL3/SDL.h>
+
 namespace Meridian {
 
 Engine::~Engine()
@@ -88,6 +90,9 @@ void Engine::run()
 
     while (!m_window->shouldClose()) {
         m_window->processEvents();
+        if (!m_window->shouldClose()) {
+            SDL_Delay(1);
+        }
     }
 }
 

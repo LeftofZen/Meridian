@@ -3,6 +3,7 @@
 #include <taskflow/taskflow.hpp>
 
 #include <memory>
+#include <stdexcept>
 
 namespace Meridian {
 
@@ -32,14 +33,33 @@ public:
         m_initialized = false;
     }
 
-    [[nodiscard]] tf::Executor& getExecutor() noexcept { return *m_executor; }
-    [[nodiscard]] const tf::Executor& getExecutor() const noexcept { return *m_executor; }
+    [[nodiscard]] tf::Executor& getExecutor()
+    {
+        ensureInitialised();
+        return *m_executor;
+    }
+    [[nodiscard]] const tf::Executor& getExecutor() const
+    {
+        ensureInitialised();
+        return *m_executor;
+    }
 
-    void run(tf::Taskflow& flow) { m_executor->run(flow).wait(); }
+    void run(tf::Taskflow& flow)
+    {
+        ensureInitialised();
+        m_executor->run(flow).wait();
+    }
 
     [[nodiscard]] bool isInitialised() const noexcept { return m_initialized; }
 
 private:
+    void ensureInitialised() const
+    {
+        if (!m_initialized || !m_executor) {
+            throw std::logic_error("TaskSystem is not initialised");
+        }
+    }
+
     std::unique_ptr<tf::Executor> m_executor;
     bool m_initialized{false};
 };

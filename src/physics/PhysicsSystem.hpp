@@ -106,6 +106,7 @@ private:
     std::unique_ptr<JPH::ObjectLayerPairFilterTable> m_objLayerPairFilter;
     std::unique_ptr<JPH::PhysicsSystem> m_physicsSystem;
     bool m_initialised{false};
+    bool m_ownsJoltFactory{false};
 };
 
 } // namespace Meridian

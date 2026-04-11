@@ -28,12 +28,22 @@ PhysicsSystem::~PhysicsSystem()
 
 bool PhysicsSystem::init()
 {
+    if (m_initialised) {
+        MRD_WARN("PhysicsSystem::init() called while already initialised; reusing current state");
+        return true;
+    }
+
     JPH::RegisterDefaultAllocator();
 
     JPH::Trace = joltTrace;
 
-    JPH::Factory::sInstance = new JPH::Factory(); // NOLINT(cppcoreguidelines-owning-memory)
-    JPH::RegisterTypes();
+    if (JPH::Factory::sInstance == nullptr) {
+        JPH::Factory::sInstance = new JPH::Factory(); // NOLINT(cppcoreguidelines-owning-memory)
+        JPH::RegisterTypes();
+        m_ownsJoltFactory = true;
+    } else {
+        MRD_WARN("Jolt factory already exists; reusing previously initialised global state");
+    }
 
     const uint32_t allocBytes = m_config.tempAllocatorSizeMB * 1024U * 1024U;
     m_tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(allocBytes);
@@ -84,9 +94,12 @@ void PhysicsSystem::shutdown()
     m_jobSystem.reset();
     m_tempAllocator.reset();
 
-    JPH::UnregisterTypes();
-    delete JPH::Factory::sInstance; // NOLINT(cppcoreguidelines-owning-memory)
-    JPH::Factory::sInstance = nullptr;
+    if (m_ownsJoltFactory) {
+        JPH::UnregisterTypes();
+        delete JPH::Factory::sInstance; // NOLINT(cppcoreguidelines-owning-memory)
+        JPH::Factory::sInstance = nullptr;
+        m_ownsJoltFactory = false;
+    }
     m_initialised = false;
 }
 

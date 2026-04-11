@@ -9,12 +9,11 @@
     {
       "name": "vs2026-debug",
       "displayName": "VS 2026 Debug",
-      "description": "Configure Meridian with Ninja, MSVC, and the shared vcpkg toolchain.",
+      "description": "Configure Meridian with Ninja, MSVC, and vcpkg from VCPKG_ROOT.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "C:/Users/bigba/source/repos/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_MANIFEST_MODE": "OFF",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
         "CMAKE_BUILD_TYPE": "Debug"
       }
