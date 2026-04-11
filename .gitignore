@@ -57,9 +57,3 @@ compile_commands.json
 
 # debug information files
 *.dwo
-
-# Local vcpkg overlay ports (environment-specific build workarounds)
-vcpkg-overlays/
-
-# Local vcpkg configuration overrides (environment-specific)
-vcpkg-configuration.json
