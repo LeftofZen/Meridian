@@ -24,6 +24,7 @@ struct WorldRenderSnapshot {
     std::size_t inFlightChunkCount{0};
     std::size_t pendingChunkCount{0};
     std::size_t uploadedVoxelCount{0};
+    std::uint64_t revision{0};
     std::vector<WorldChunkRenderData> chunks;
 };
 
@@ -62,12 +63,14 @@ public:
         std::size_t residentChunkCount,
         std::size_t inFlightChunkCount,
         std::size_t pendingChunkCount,
+        std::uint64_t revision,
         std::vector<WorldChunkRenderData> chunks)
     {
         std::scoped_lock lock(m_mutex);
         m_snapshot.world.residentChunkCount = residentChunkCount;
         m_snapshot.world.inFlightChunkCount = inFlightChunkCount;
         m_snapshot.world.pendingChunkCount = pendingChunkCount;
+        m_snapshot.world.revision = revision;
         m_snapshot.world.uploadedVoxelCount = 0;
         for (const WorldChunkRenderData& chunk : chunks) {
             m_snapshot.world.uploadedVoxelCount += chunk.materialIds.size();

@@ -60,6 +60,8 @@ Traditional meshes are unsuitable for infinite, editable terrain. Meridian treat
 
 The current terrain bootstrap uses a heightfield as source data, following Runevision's erosion work: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
 
+Meridian's terrain compute path now ports the actual Buffer A generation logic from Runevision's advanced terrain erosion shader rather than a simplified approximation. That includes derivative noise for the base height field, Phacelle noise, the full erosion filter with assumed-slope control, pointy-peak gully weighting, stacked fading, separate ridge and crease rounding, and ridge-map generation alongside the final height output.
+
 The broader chunk-data pipeline follows John Lin's argument that voxel engines should preserve a common raw format and convert into specialized structures as needed rather than forcing all systems onto one representation: https://voxely.net/blog/the-perfect-voxel-engine/.
 
 - **Efficiency:** O(\log n) traversal using a **Digital Differential Analyzer (DDA)** algorithm.

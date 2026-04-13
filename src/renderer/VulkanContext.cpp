@@ -647,9 +647,12 @@ bool VulkanContext::renderFrame()
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[imageIndex];
 
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[frameIndex]) != VK_SUCCESS) {
-        MRD_ERROR("vkQueueSubmit failed");
-        return false;
+    {
+        std::scoped_lock lock(m_queueSubmitMutex);
+        if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[frameIndex]) != VK_SUCCESS) {
+            MRD_ERROR("vkQueueSubmit failed");
+            return false;
+        }
     }
 
     VkPresentInfoKHR presentInfo{};
@@ -660,7 +663,11 @@ bool VulkanContext::renderFrame()
     presentInfo.pSwapchains = &m_swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
-    const VkResult presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+    VkResult presentResult = VK_SUCCESS;
+    {
+        std::scoped_lock lock(m_queueSubmitMutex);
+        presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+    }
     if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
         requestPresentationRebuild();
         return false;

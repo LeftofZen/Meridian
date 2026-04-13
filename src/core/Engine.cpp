@@ -159,10 +159,20 @@ bool Engine::init()
     // ── World ─────────────────────────────────────────────────────────────
     m_world = std::make_unique<World>();
     m_world->setTaskSystem(*m_tasks);
+    m_world->setVulkanContext(*m_vulkan);
     if (!m_world->init()) {
         MRD_CRITICAL("World init failed");
         return false;
     }
+    m_debugOverlay->setTerrainSettingsCallbacks(
+        [this]() {
+            return m_world ? m_world->terrainSettings() : TerrainHeightmapSettings{};
+        },
+        [this](const TerrainHeightmapSettings& terrainSettings) {
+            if (m_world) {
+                m_world->requestTerrainSettings(terrainSettings);
+            }
+        });
     MRD_INFO("[OK] World");
 
     MRD_INFO("=== All systems operational ===");
@@ -225,6 +235,7 @@ void Engine::run()
                 m_world->getResidentChunkCount(),
                 m_world->getInFlightChunkCount(),
                 m_world->getPendingChunkCount(),
+                m_world->getRenderRevision(),
                 m_world->buildRenderData());
         }
         if (m_freeCameraController) {

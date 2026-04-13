@@ -63,6 +63,7 @@ void PathTracerRenderer::beginFrame()
     if (m_renderStateStore != nullptr) {
         m_renderStateSnapshot = m_renderStateStore->snapshot();
         const bool worldChanged =
+            m_renderStateSnapshot.world.revision != m_worldRevision ||
             m_renderStateSnapshot.world.residentChunkCount != m_uploadedChunkCount ||
             m_renderStateSnapshot.world.uploadedVoxelCount != m_uploadedVoxelCount;
 
@@ -71,6 +72,7 @@ void PathTracerRenderer::beginFrame()
             if (!uploadWorldData()) {
                 MRD_WARN("Path tracer world upload failed");
             }
+            m_worldRevision = m_renderStateSnapshot.world.revision;
         }
     }
 }

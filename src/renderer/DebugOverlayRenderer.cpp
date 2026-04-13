@@ -101,6 +101,190 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         ImGui::TextUnformatted("Boost: Left Shift");
     }
 
+    if (m_getTerrainSettings && m_requestTerrainSettings) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Terrain Erosion");
+
+        TerrainHeightmapSettings terrainSettings = m_getTerrainSettings();
+        bool changed = false;
+
+        int octaveCount = static_cast<int>(terrainSettings.octaveCount);
+        changed |= ImGui::SliderInt("Terrain Octaves", &octaveCount, 1, 8);
+        terrainSettings.octaveCount = static_cast<std::uint32_t>(octaveCount);
+
+        int heightOctaveCount = static_cast<int>(terrainSettings.heightOctaveCount);
+        changed |= ImGui::SliderInt("Height Octaves", &heightOctaveCount, 1, 8);
+        terrainSettings.heightOctaveCount = static_cast<std::uint32_t>(heightOctaveCount);
+
+        changed |= ImGui::SliderFloat(
+            "World Scale",
+            &terrainSettings.baseFrequency,
+            0.001F,
+            0.05F,
+            "%.4f");
+        changed |= ImGui::SliderFloat(
+            "Height Frequency",
+            &terrainSettings.heightFrequency,
+            0.25F,
+            8.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Height Amplitude",
+            &terrainSettings.heightAmplitude,
+            0.01F,
+            0.35F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Height Lacunarity",
+            &terrainSettings.heightLacunarity,
+            1.1F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Height Gain",
+            &terrainSettings.heightGain,
+            0.01F,
+            0.8F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Erosion Scale",
+            &terrainSettings.erosionFrequency,
+            0.01F,
+            0.5F,
+            "%.4f");
+        changed |= ImGui::SliderFloat(
+            "Erosion Strength",
+            &terrainSettings.erosionStrength,
+            0.0F,
+            1.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Gully Weight",
+            &terrainSettings.gullyWeight,
+            0.0F,
+            1.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Erosion Gain",
+            &terrainSettings.octaveGain,
+            0.1F,
+            0.95F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Erosion Lacunarity",
+            &terrainSettings.lacunarity,
+            1.1F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Cell Scale",
+            &terrainSettings.cellSizeMultiplier,
+            0.25F,
+            2.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Assumed Slope",
+            &terrainSettings.slopeScale,
+            0.05F,
+            2.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Assumed Slope Blend",
+            &terrainSettings.straightSteeringStrength,
+            0.0F,
+            1.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Erosion Detail",
+            &terrainSettings.stackedDetail,
+            0.25F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Normalization",
+            &terrainSettings.normalizationFactor,
+            0.0F,
+            1.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Ridge Rounding",
+            &terrainSettings.ridgeRounding,
+            0.0F,
+            2.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Crease Rounding",
+            &terrainSettings.creaseRounding,
+            0.0F,
+            2.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Input Rounding Mult",
+            &terrainSettings.inputRoundingMultiplier,
+            0.0F,
+            2.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Octave Rounding Mult",
+            &terrainSettings.octaveRoundingMultiplier,
+            0.25F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Onset Initial",
+            &terrainSettings.onsetInitial,
+            0.1F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Onset Octave",
+            &terrainSettings.onsetOctave,
+            0.1F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "RidgeMap Onset Initial",
+            &terrainSettings.ridgeMapOnsetInitial,
+            0.1F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "RidgeMap Onset Octave",
+            &terrainSettings.ridgeMapOnsetOctave,
+            0.1F,
+            4.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Height Offset Base",
+            &terrainSettings.heightOffsetBase,
+            -1.0F,
+            1.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Height Offset Fade",
+            &terrainSettings.heightOffsetFadeInfluence,
+            0.0F,
+            1.0F,
+            "%.3f");
+        changed |= ImGui::SliderFloat(
+            "Min Height",
+            &terrainSettings.minWorldHeight,
+            -128.0F,
+            0.0F,
+            "%.1f");
+        changed |= ImGui::SliderFloat(
+            "Max Height",
+            &terrainSettings.maxWorldHeight,
+            1.0F,
+            192.0F,
+            "%.1f");
+
+        if (changed) {
+            terrainSettings.clamp();
+            m_requestTerrainSettings(terrainSettings);
+        }
+    }
+
     ImGui::End();
 }
 } // namespace Meridian

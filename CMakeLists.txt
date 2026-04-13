@@ -58,6 +58,7 @@ file(TO_CMAKE_PATH "${MERIDIAN_SHADER_OUTPUT_DIR}" MERIDIAN_SHADER_OUTPUT_DIR_CM
 set(MERIDIAN_SHADER_SOURCES
     shaders/fullscreen_triangle.vert
     shaders/basic_pathtracer.frag
+    shaders/terrain_heightmap.comp
 )
 
 set(MERIDIAN_SHADER_OUTPUTS)
@@ -118,6 +119,7 @@ target_sources(Meridian PRIVATE
     src/scripting/ScriptingSystem.cpp
     src/world/WorldChunkManager.cpp
     src/world/SparseVoxelOctree.cpp
+    src/world/TerrainHeightmapGenerator.cpp
     src/world/WorldChunkStorage.cpp
     src/world/WorldSpatialHashGrid.cpp
     src/world/World.cpp

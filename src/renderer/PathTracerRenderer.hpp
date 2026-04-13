@@ -93,6 +93,7 @@ private:
     GpuBuffer m_voxelBuffer;
     std::size_t m_uploadedChunkCount{0};
     std::size_t m_uploadedVoxelCount{0};
+    std::uint64_t m_worldRevision{0};
     std::array<float, 3> m_sceneMin{};
     std::array<float, 3> m_sceneMax{};
     std::uint32_t m_frameIndex{0};

@@ -309,6 +309,7 @@ void main()
         const vec2 jitter = vec2(randomFloat(rngState), randomFloat(rngState));
         vec2 ndc = ((pixel + jitter) / pc.frameData.xy) * 2.0 - 1.0;
         ndc.x *= aspectRatio;
+        ndc.y = -ndc.y;
 
         Ray ray;
         ray.origin = pc.cameraPosition.xyz;

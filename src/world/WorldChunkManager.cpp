@@ -1,6 +1,7 @@
 #include "world/WorldChunkManager.hpp"
 
 #include "core/Logger.hpp"
+#include "world/TerrainHeightmapGenerator.hpp"
 #include "world/SparseVoxelOctree.hpp"
 #include "world/WorldChunkStorage.hpp"
 
@@ -40,9 +41,17 @@ namespace {
     }
 }
 
+[[nodiscard]] ChunkKey heightmapTileKey(ChunkCoord coord) noexcept
+{
+    return makeChunkKey(ChunkCoord{.x = coord.x, .y = 0, .z = coord.z});
+}
+
 } // namespace
 
-WorldChunkManager::WorldChunkManager(TaskSystem& taskSystem) noexcept : m_tasks(taskSystem) {}
+WorldChunkManager::WorldChunkManager(
+    TaskSystem& taskSystem,
+    TerrainHeightmapGenerator* heightmapGenerator) noexcept
+    : m_tasks(taskSystem), m_heightmapGenerator(heightmapGenerator) {}
 
 bool WorldChunkManager::init()
 {
@@ -52,6 +61,8 @@ bool WorldChunkManager::init()
     }
 
     m_initialised = true;
+    bootstrapChunkRequests();
+    warmHeightmapTiles();
     MRD_INFO("WorldChunkManager initialized (chunk resolution: {}^3 voxels)",
         kWorldChunkResolution);
     return true;
@@ -66,8 +77,10 @@ void WorldChunkManager::shutdown()
     m_pendingRequests.clear();
     m_inFlightJobs.clear();
     m_chunkRecords.clear();
+    m_heightmapTiles.clear();
     m_residentChunks.clear();
     m_bootstrapRequested = false;
+    ++m_renderRevision;
     m_initialised = false;
     MRD_INFO("WorldChunkManager shutting down");
 }
@@ -76,10 +89,6 @@ void WorldChunkManager::update(float /*deltaTimeSeconds*/)
 {
     if (!m_initialised) {
         return;
-    }
-
-    if (!m_bootstrapRequested) {
-        bootstrapChunkRequests();
     }
 
     dispatchChunkJobs();
@@ -140,6 +149,10 @@ std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
 
 void WorldChunkManager::bootstrapChunkRequests()
 {
+    if (m_bootstrapRequested) {
+        return;
+    }
+
     for (int y = -kBootstrapRadius; y <= kBootstrapRadius; ++y) {
         for (int z = -kBootstrapRadius; z <= kBootstrapRadius; ++z) {
             for (int x = -kBootstrapRadius; x <= kBootstrapRadius; ++x) {
@@ -150,6 +163,22 @@ void WorldChunkManager::bootstrapChunkRequests()
 
     m_bootstrapRequested = true;
     MRD_INFO("World chunk manager queued {} bootstrap chunks", m_pendingRequests.size());
+}
+
+void WorldChunkManager::warmHeightmapTiles()
+{
+    if (m_heightmapGenerator == nullptr) {
+        return;
+    }
+
+    for (const ChunkCoord& coord : m_pendingRequests) {
+        const ChunkKey key = heightmapTileKey(coord);
+        if (m_heightmapTiles.contains(key)) {
+            continue;
+        }
+
+        m_heightmapTiles.emplace(key, m_heightmapGenerator->generateTile(coord));
+    }
 }
 
 void WorldChunkManager::requestChunk(ChunkCoord coord)
@@ -167,6 +196,22 @@ void WorldChunkManager::requestChunk(ChunkCoord coord)
     m_pendingRequests.push_back(coord);
 }
 
+void WorldChunkManager::rebuildActiveTerrain()
+{
+    m_pendingRequests.clear();
+    m_inFlightJobs.clear();
+    m_chunkRecords.clear();
+    m_heightmapTiles.clear();
+    m_residentChunks.clear();
+    m_bootstrapRequested = false;
+    ++m_renderRevision;
+
+    bootstrapChunkRequests();
+    warmHeightmapTiles();
+
+    MRD_INFO("World chunk manager rebuilding active terrain");
+}
+
 void WorldChunkManager::dispatchChunkJobs()
 {
     while (!m_pendingRequests.empty() && m_inFlightJobs.size() < kMaxConcurrentJobs) {
@@ -181,11 +226,26 @@ void WorldChunkManager::dispatchChunkJobs()
 
         chunkIt->second.status = ChunkStatus::Generating;
 
+        TerrainHeightmapTile heightmapTile;
+        TerrainHeightmapSettings heightmapSettings;
+        if (m_heightmapGenerator != nullptr) {
+            const ChunkKey tileKey = heightmapTileKey(coord);
+            auto tileIt = m_heightmapTiles.find(tileKey);
+            if (tileIt == m_heightmapTiles.end()) {
+                tileIt = m_heightmapTiles.emplace(
+                    tileKey,
+                    m_heightmapGenerator->generateTile(coord)).first;
+            }
+
+            heightmapTile = tileIt->second;
+            heightmapSettings = m_heightmapGenerator->settings();
+        }
+
         m_inFlightJobs.push_back(ChunkJob{
             .coord = coord,
             .key = key,
-            .future = m_tasks.async([coord]() {
-                return generateChunk(coord);
+            .future = m_tasks.async([coord, heightmapTile, heightmapSettings]() {
+                return WorldChunkManager::generateChunk(coord, heightmapTile, heightmapSettings);
             }),
         });
     }
@@ -212,6 +272,7 @@ void WorldChunkManager::collectCompletedJobs()
             ChunkRecord& record = chunkIt->second;
             record.status = ChunkStatus::Resident;
             m_residentChunks.upsert(std::move(generatedChunk.chunkStorage));
+            ++m_renderRevision;
 
             const WorldChunkStorage* residentChunk = m_residentChunks.find(job.key);
             if (residentChunk == nullptr) {
@@ -235,10 +296,14 @@ void WorldChunkManager::collectCompletedJobs()
 }
 
 WorldChunkManager::GeneratedChunk WorldChunkManager::generateChunk(
-    ChunkCoord coord)
+    ChunkCoord coord,
+    TerrainHeightmapTile heightmapTile,
+    TerrainHeightmapSettings heightmapSettings)
 {
     const ChunkKey key = makeChunkKey(coord);
-    std::vector<VoxelSample> voxels = generateDefaultChunkVoxels(coord);
+    std::vector<VoxelSample> voxels = !heightmapTile.grayscale.empty()
+        ? generateHeightmapChunkVoxels(coord, heightmapTile, heightmapSettings)
+        : generateDefaultChunkVoxels(coord);
     SparseVoxelOctree octree =
         SparseVoxelOctree::build(voxels, kWorldChunkResolution);
 
@@ -250,6 +315,53 @@ WorldChunkManager::GeneratedChunk WorldChunkManager::generateChunk(
             std::move(voxels),
             std::move(octree)),
     };
+}
+
+std::vector<VoxelSample> WorldChunkManager::generateHeightmapChunkVoxels(
+    ChunkCoord coord,
+    const TerrainHeightmapTile& tile,
+    const TerrainHeightmapSettings& settings)
+{
+    std::vector<VoxelSample> voxels(
+        static_cast<std::size_t>(kWorldChunkResolution) *
+        kWorldChunkResolution *
+        kWorldChunkResolution);
+
+    const int chunkBaseY = coord.y * kWorldChunkSize;
+    for (std::uint32_t localZ = 0; localZ < kWorldChunkResolution; ++localZ) {
+        for (std::uint32_t localX = 0; localX < kWorldChunkResolution; ++localX) {
+            const std::size_t heightIndex =
+                static_cast<std::size_t>(localX) +
+                static_cast<std::size_t>(localZ) * tile.resolution;
+            const float grayscale = heightIndex < tile.grayscale.size() ? tile.grayscale[heightIndex] : 0.5F;
+            const float ridgeMap = heightIndex < tile.ridgeMap.size() ? tile.ridgeMap[heightIndex] : 0.5F;
+            const float surfaceHeight =
+                settings.minWorldHeight + grayscale * settings.heightRange();
+
+            for (std::uint32_t localY = 0; localY < kWorldChunkResolution; ++localY) {
+                const float voxelCenterY = static_cast<float>(chunkBaseY + static_cast<int>(localY)) + 0.5F;
+                if (voxelCenterY > surfaceHeight) {
+                    continue;
+                }
+
+                const std::size_t voxelIndex =
+                    static_cast<std::size_t>(localX) +
+                    static_cast<std::size_t>(localY) * kWorldChunkResolution +
+                    static_cast<std::size_t>(localZ) * kWorldChunkResolution * kWorldChunkResolution;
+                VoxelSample& voxel = voxels[voxelIndex];
+                voxel.density = 1.0F;
+                const float surfaceDepth = surfaceHeight - voxelCenterY;
+                const float ridgeSigned = ridgeMap * 2.0F - 1.0F;
+                const bool surfaceCrease = ridgeSigned < -0.35F && surfaceDepth <= 2.0F;
+                voxel.materialId = static_cast<std::uint8_t>(
+                    surfaceDepth <= 1.5F && !surfaceCrease
+                        ? VoxelMaterialId::Grass
+                        : VoxelMaterialId::Stone);
+            }
+        }
+    }
+
+    return voxels;
 }
 
 std::vector<VoxelSample> WorldChunkManager::generateDefaultChunkVoxels(ChunkCoord coord)

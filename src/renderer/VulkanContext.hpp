@@ -7,6 +7,7 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include <array>
+#include <mutex>
 #include <memory>
 #include <optional>
 #include <span>
@@ -63,7 +64,12 @@ public:
     {
         return m_graphicsQueueFamily.value();
     }
+    [[nodiscard]] uint32_t getComputeQueueFamily() const noexcept
+    {
+        return m_computeQueueFamily.value_or(m_graphicsQueueFamily.value());
+    }
     [[nodiscard]] bool isVSyncEnabled() const noexcept { return m_vsyncEnabled; }
+    [[nodiscard]] std::mutex& getQueueSubmitMutex() noexcept { return m_queueSubmitMutex; }
     void setVSyncEnabled(bool enabled);
     [[nodiscard]] const char* getPresentModeName() const noexcept;
 
@@ -163,6 +169,7 @@ private:
     bool m_presentationRebuildRequested{false};
     uint32_t m_minImageCount{2};
     VkPresentModeKHR m_presentMode{VK_PRESENT_MODE_FIFO_KHR};
+    std::mutex m_queueSubmitMutex;
     IRenderFrontend* m_renderFrontend{nullptr};
     std::unique_ptr<ShaderLibrary> m_shaderLibrary;
 
