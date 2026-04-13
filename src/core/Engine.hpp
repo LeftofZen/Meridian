@@ -9,6 +9,7 @@
 #include "scripting/ScriptingSystem.hpp"
 #include "tasks/TaskSystem.hpp"
 #include "window/Window.hpp"
+#include "world/World.hpp"
 
 #include <memory>
 
@@ -42,6 +43,7 @@ public:
     [[nodiscard]] NetworkSystem& getNetwork() noexcept { return *m_network; }
     [[nodiscard]] ScriptingSystem& getScripting() noexcept { return *m_scripting; }
     [[nodiscard]] TaskSystem& getTasks() noexcept { return *m_tasks; }
+    [[nodiscard]] World& getWorld() noexcept { return *m_world; }
 
 private:
     std::unique_ptr<Window> m_window;
@@ -52,6 +54,7 @@ private:
     std::unique_ptr<NetworkSystem> m_network;
     std::unique_ptr<ScriptingSystem> m_scripting;
     std::unique_ptr<TaskSystem> m_tasks;
+    std::unique_ptr<World> m_world;
 };
 
 } // namespace Meridian

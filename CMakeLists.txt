@@ -47,6 +47,7 @@ target_sources(Meridian PRIVATE
     src/physics/PhysicsSystem.cpp
     src/networking/NetworkSystem.cpp
     src/scripting/ScriptingSystem.cpp
+    src/world/World.cpp
 )
 
 target_include_directories(Meridian PRIVATE
