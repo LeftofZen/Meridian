@@ -70,6 +70,22 @@ bool Engine::init()
     }
     MRD_INFO("[OK] Window");
 
+    // ── Input and camera ─────────────────────────────────────────────────
+    m_inputManager = std::make_unique<InputManager>();
+    if (!m_inputManager->init()) {
+        MRD_CRITICAL("InputManager init failed");
+        return false;
+    }
+    m_inputManager->attachWindow(m_window->getHandle());
+    MRD_INFO("[OK] InputManager");
+
+    m_freeCameraController = std::make_unique<FreeCameraController>(*m_inputManager);
+    if (!m_freeCameraController->init()) {
+        MRD_CRITICAL("FreeCameraController init failed");
+        return false;
+    }
+    MRD_INFO("[OK] FreeCameraController");
+
     // ── Vulkan renderer ───────────────────────────────────────────────────
     m_renderPipeline = std::make_unique<RenderFramePipeline>();
     m_pathTracerRenderer = std::make_unique<PathTracerRenderer>();
@@ -77,6 +93,7 @@ bool Engine::init()
     m_worldSceneRenderer = std::make_unique<WorldSceneRenderer>();
     m_vulkan = std::make_unique<VulkanContext>(
         VulkanContextConfig{.appName = "Meridian", .enableValidation = true});
+    m_pathTracerRenderer->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setPathTracerSettings(m_pathTracerRenderer->settings());
     m_worldSceneRenderer->setRenderStateStore(m_renderStateStore);
@@ -85,6 +102,9 @@ bool Engine::init()
     m_renderPipeline->addFeature(*m_debugOverlay);
     m_vulkan->setRenderFrontend(m_renderPipeline.get());
     m_window->setEventHandler([this](const SDL_Event& event) {
+        if (m_inputManager) {
+            m_inputManager->handleEvent(event);
+        }
         if (m_renderPipeline) {
             m_renderPipeline->handleEvent(event);
         }
@@ -164,8 +184,10 @@ void Engine::run()
             static_cast<float>(currentCounter - previousCounter) / performanceFrequency;
         previousCounter = currentCounter;
 
-        const std::array<ISystem*, 8> systems{
+        const std::array<ISystem*, 10> systems{
             m_window.get(),
+            m_inputManager.get(),
+            m_freeCameraController.get(),
             m_audio.get(),
             m_physics.get(),
             m_ecs.get(),
@@ -202,7 +224,11 @@ void Engine::run()
             m_renderStateStore.updateWorldStats(
                 m_world->getResidentChunkCount(),
                 m_world->getInFlightChunkCount(),
-                m_world->getPendingChunkCount());
+                m_world->getPendingChunkCount(),
+                m_world->buildRenderData());
+        }
+        if (m_freeCameraController) {
+            m_renderStateStore.updateCameraState(m_freeCameraController->cameraState());
         }
     }
 
@@ -230,9 +256,11 @@ void Engine::shutdown()
     m_audio.reset();
     m_vulkan.reset();
     m_pathTracerRenderer.reset();
+    m_freeCameraController.reset();
     m_worldSceneRenderer.reset();
     m_debugOverlay.reset();
     m_renderPipeline.reset();
+    m_inputManager.reset();
     m_window.reset();
     m_tasks.reset();
 

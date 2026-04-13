@@ -4,9 +4,11 @@
 #include "core/Logger.hpp"
 #include "core/SystemFrameStats.hpp"
 #include "ecs/ECSSystem.hpp"
+#include "input/InputManager.hpp"
 #include "networking/NetworkSystem.hpp"
 #include "physics/PhysicsSystem.hpp"
 #include "renderer/DebugOverlayRenderer.hpp"
+#include "renderer/FreeCameraController.hpp"
 #include "renderer/PathTracerRenderer.hpp"
 #include "renderer/RenderFramePipeline.hpp"
 #include "renderer/RenderStateStore.hpp"
@@ -58,8 +60,10 @@ private:
     void startRenderLoop();
     void stopRenderLoop();
 
-    static constexpr std::array<SystemFrameStat, 9> kInitialFrameStats{{
+    static constexpr std::array<SystemFrameStat, 11> kInitialFrameStats{{
         {"Window", 0.0F},
+        {"Input", 0.0F},
+        {"Camera", 0.0F},
         {"Audio", 0.0F},
         {"Physics", 0.0F},
         {"ECS", 0.0F},
@@ -71,8 +75,10 @@ private:
     }};
 
     std::unique_ptr<Window> m_window;
+    std::unique_ptr<InputManager> m_inputManager;
     std::unique_ptr<VulkanContext> m_vulkan;
     std::unique_ptr<RenderFramePipeline> m_renderPipeline;
+    std::unique_ptr<FreeCameraController> m_freeCameraController;
     std::unique_ptr<PathTracerRenderer> m_pathTracerRenderer;
     std::unique_ptr<DebugOverlayRenderer> m_debugOverlay;
     std::unique_ptr<WorldSceneRenderer> m_worldSceneRenderer;
@@ -84,7 +90,7 @@ private:
     std::unique_ptr<TaskSystem> m_tasks;
     std::unique_ptr<World> m_world;
     RenderStateStore m_renderStateStore;
-    std::array<SystemFrameStat, 9> m_systemFrameStats{kInitialFrameStats};
+    std::array<SystemFrameStat, 11> m_systemFrameStats{kInitialFrameStats};
     float m_lastFrameDeltaMilliseconds{0.0F};
     float m_lastFrameCpuMilliseconds{0.0F};
     std::atomic<bool> m_renderLoopRunning{false};

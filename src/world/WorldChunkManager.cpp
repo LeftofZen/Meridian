@@ -101,6 +101,43 @@ std::size_t WorldChunkManager::getPendingChunkCount() const noexcept
     return m_pendingRequests.size();
 }
 
+std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
+{
+    std::vector<WorldChunkRenderData> renderData;
+    renderData.reserve(m_residentChunks.size());
+
+    for (const auto& [key, chunkStorage] : m_residentChunks.chunks()) {
+        (void)key;
+
+        WorldChunkRenderData chunkData{
+            .coord = chunkStorage.coord(),
+            .voxelResolution = chunkStorage.voxelResolution(),
+        };
+        chunkData.materialIds.reserve(chunkStorage.voxels().size());
+
+        for (const VoxelSample& voxel : chunkStorage.voxels()) {
+            chunkData.materialIds.push_back(static_cast<std::uint32_t>(voxel.materialId));
+        }
+
+        renderData.push_back(std::move(chunkData));
+    }
+
+    std::sort(
+        renderData.begin(),
+        renderData.end(),
+        [](const WorldChunkRenderData& left, const WorldChunkRenderData& right) {
+            if (left.coord.y != right.coord.y) {
+                return left.coord.y < right.coord.y;
+            }
+            if (left.coord.z != right.coord.z) {
+                return left.coord.z < right.coord.z;
+            }
+            return left.coord.x < right.coord.x;
+        });
+
+    return renderData;
+}
+
 void WorldChunkManager::bootstrapChunkRequests()
 {
     for (int y = -kBootstrapRadius; y <= kBootstrapRadius; ++y) {

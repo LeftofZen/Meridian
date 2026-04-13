@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/SystemFrameStats.hpp"
+#include "renderer/CameraState.hpp"
+#include "world/WorldRenderData.hpp"
 
 #include <mutex>
 #include <span>
@@ -21,11 +23,14 @@ struct WorldRenderSnapshot {
     std::size_t residentChunkCount{0};
     std::size_t inFlightChunkCount{0};
     std::size_t pendingChunkCount{0};
+    std::size_t uploadedVoxelCount{0};
+    std::vector<WorldChunkRenderData> chunks;
 };
 
 struct RenderStateSnapshot {
     RenderTimingSnapshot timing;
     WorldRenderSnapshot world;
+    CameraRenderState camera;
     std::vector<SystemFrameStat> systemFrameStats;
 };
 
@@ -56,12 +61,24 @@ public:
     void updateWorldStats(
         std::size_t residentChunkCount,
         std::size_t inFlightChunkCount,
-        std::size_t pendingChunkCount)
+        std::size_t pendingChunkCount,
+        std::vector<WorldChunkRenderData> chunks)
     {
         std::scoped_lock lock(m_mutex);
         m_snapshot.world.residentChunkCount = residentChunkCount;
         m_snapshot.world.inFlightChunkCount = inFlightChunkCount;
         m_snapshot.world.pendingChunkCount = pendingChunkCount;
+        m_snapshot.world.uploadedVoxelCount = 0;
+        for (const WorldChunkRenderData& chunk : chunks) {
+            m_snapshot.world.uploadedVoxelCount += chunk.materialIds.size();
+        }
+        m_snapshot.world.chunks = std::move(chunks);
+    }
+
+    void updateCameraState(const CameraRenderState& camera)
+    {
+        std::scoped_lock lock(m_mutex);
+        m_snapshot.camera = camera;
     }
 
     [[nodiscard]] RenderStateSnapshot snapshot() const

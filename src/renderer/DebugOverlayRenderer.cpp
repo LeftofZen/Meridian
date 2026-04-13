@@ -44,6 +44,11 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         m_renderStateSnapshot.timing.renderDeltaMilliseconds,
         m_renderStateSnapshot.timing.framesPerSecond);
     ImGui::Text("Render CPU: %.3f ms", m_renderStateSnapshot.timing.renderCpuMilliseconds);
+    ImGui::Text(
+        "Camera: (%.1f, %.1f, %.1f)",
+        m_renderStateSnapshot.camera.position[0],
+        m_renderStateSnapshot.camera.position[1],
+        m_renderStateSnapshot.camera.position[2]);
 
     bool vsyncEnabled = m_context->isVSyncEnabled();
     if (ImGui::Checkbox("VSync", &vsyncEnabled)) {
@@ -87,6 +92,13 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
             m_pathTracerSettings->samplesPerPixel = samplesPerPixel;
             m_pathTracerSettings->clamp();
         }
+
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Camera Controls");
+        ImGui::TextUnformatted("Move: W A S D");
+        ImGui::TextUnformatted("Vertical: Space / Left Ctrl");
+        ImGui::TextUnformatted("Look: Hold Right Mouse / Arrow Keys");
+        ImGui::TextUnformatted("Boost: Left Shift");
     }
 
     ImGui::End();

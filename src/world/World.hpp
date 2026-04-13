@@ -2,6 +2,7 @@
 
 #include "core/ISystem.hpp"
 #include "world/WorldChunkManager.hpp"
+#include "world/WorldRenderData.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -29,6 +30,7 @@ public:
     [[nodiscard]] std::size_t getResidentChunkCount() const noexcept;
     [[nodiscard]] std::size_t getInFlightChunkCount() const noexcept;
     [[nodiscard]] std::size_t getPendingChunkCount() const noexcept;
+    [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
 private:
     TaskSystem* m_tasks{nullptr};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/WorldData.hpp"
+#include "world/WorldRenderData.hpp"
 #include "world/WorldSpatialHashGrid.hpp"
 
 #include <cstddef>
@@ -31,6 +32,7 @@ public:
     [[nodiscard]] std::size_t getResidentChunkCount() const noexcept;
     [[nodiscard]] std::size_t getInFlightChunkCount() const noexcept;
     [[nodiscard]] std::size_t getPendingChunkCount() const noexcept;
+    [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
 private:
     enum class ChunkStatus {

@@ -103,8 +103,10 @@ endif()
 target_sources(Meridian PRIVATE
     src/main.cpp
     src/core/Engine.cpp
+    src/input/InputManager.cpp
     src/window/Window.cpp
     src/renderer/DebugOverlayRenderer.cpp
+    src/renderer/FreeCameraController.cpp
     src/renderer/PathTracerRenderer.cpp
     src/renderer/RenderFramePipeline.cpp
     src/renderer/ShaderLibrary.cpp

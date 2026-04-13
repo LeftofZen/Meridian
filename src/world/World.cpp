@@ -72,4 +72,9 @@ std::size_t World::getPendingChunkCount() const noexcept
     return m_chunkManager ? m_chunkManager->getPendingChunkCount() : 0;
 }
 
+std::vector<WorldChunkRenderData> World::buildRenderData() const
+{
+    return m_chunkManager ? m_chunkManager->buildRenderData() : std::vector<WorldChunkRenderData>{};
+}
+
 } // namespace Meridian
