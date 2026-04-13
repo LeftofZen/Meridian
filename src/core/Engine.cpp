@@ -31,7 +31,10 @@ void Engine::startRenderLoop()
             const float renderCpuMilliseconds =
                 static_cast<float>(renderCpuEndCounter - renderCpuStartCounter) * 1000.0F /
                 performanceFrequency;
-            m_renderStateStore.updateRenderStats(renderDeltaMilliseconds, renderCpuMilliseconds);
+            m_renderStateStore.updateRenderStats(
+                renderDeltaMilliseconds,
+                renderCpuMilliseconds,
+                m_vulkan->getLastRenderBackendStats());
         }
     });
 }
@@ -97,6 +100,7 @@ bool Engine::init()
     m_debugOverlay->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setPathTracerSettings(m_pathTracerRenderer->settings());
     m_worldSceneRenderer->setRenderStateStore(m_renderStateStore);
+    m_renderPipeline->setRenderStateStore(m_renderStateStore);
     m_renderPipeline->addFeature(*m_pathTracerRenderer);
     m_renderPipeline->addFeature(*m_worldSceneRenderer);
     m_renderPipeline->addFeature(*m_debugOverlay);
@@ -165,6 +169,7 @@ bool Engine::init()
         return false;
     }
     if (m_freeCameraController) {
+        m_world->setStreamingDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
         m_world->setStreamingCamera(m_freeCameraController->cameraState());
     }
     m_debugOverlay->setTerrainSettingsCallbacks(
@@ -217,6 +222,7 @@ void Engine::run()
                 const Uint64 updateStartCounter = SDL_GetPerformanceCounter();
                 system->update(deltaTimeSeconds);
                 if (system == m_freeCameraController.get() && m_world != nullptr) {
+                    m_world->setStreamingDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
                     m_world->setStreamingCamera(m_freeCameraController->cameraState());
                 }
                 const Uint64 updateEndCounter = SDL_GetPerformanceCounter();

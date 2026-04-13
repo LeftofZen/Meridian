@@ -20,6 +20,8 @@ public:
     DebugOverlayRenderer(DebugOverlayRenderer&&) = delete;
     DebugOverlayRenderer& operator=(DebugOverlayRenderer&&) = delete;
 
+    [[nodiscard]] const char* profileName() const noexcept override { return "Debug Overlay"; }
+
     void setRenderStateStore(RenderStateStore& renderStateStore) noexcept
     {
         m_renderStateStore = &renderStateStore;

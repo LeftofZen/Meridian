@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -17,6 +18,13 @@
 namespace Meridian {
 
 namespace {
+
+[[nodiscard]] float elapsedMilliseconds(
+    const std::chrono::steady_clock::time_point start,
+    const std::chrono::steady_clock::time_point end) noexcept
+{
+    return std::chrono::duration<float, std::milli>(end - start).count();
+}
 
 void logVkResult(VkResult result)
 {
@@ -558,7 +566,9 @@ bool VulkanContext::createCommandBuffers()
 
 bool VulkanContext::createSyncObjects()
 {
-    const std::size_t frameCount = m_swapchainImages.size();
+    const std::size_t frameCount = std::max<std::size_t>(
+        1,
+        m_vsyncEnabled ? 1 : std::min<std::size_t>(2, m_swapchainImages.size()));
     m_imageAvailableSemaphores.resize(frameCount);
     m_renderFinishedSemaphores.resize(frameCount);
     m_inFlightFences.resize(frameCount);
@@ -597,10 +607,16 @@ bool VulkanContext::renderFrame()
         return false;
     }
 
+    RenderBackendStats frameStats{};
+
     const std::size_t frameIndex = m_currentFrame % m_inFlightFences.size();
+    auto phaseStart = std::chrono::steady_clock::now();
     vkWaitForFences(m_device, 1, &m_inFlightFences[frameIndex], VK_TRUE, UINT64_MAX);
+    auto phaseEnd = std::chrono::steady_clock::now();
+    frameStats.frameFenceWaitMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
 
     uint32_t imageIndex = 0;
+    phaseStart = std::chrono::steady_clock::now();
     const VkResult acquireResult = vkAcquireNextImageKHR(
         m_device,
         m_swapchain,
@@ -608,18 +624,25 @@ bool VulkanContext::renderFrame()
         m_imageAvailableSemaphores[frameIndex],
         VK_NULL_HANDLE,
         &imageIndex);
+    phaseEnd = std::chrono::steady_clock::now();
+    frameStats.acquireWaitMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
 
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_SUBOPTIMAL_KHR) {
+        m_lastRenderBackendStats = frameStats;
         requestPresentationRebuild();
         return false;
     }
     if (acquireResult != VK_SUCCESS) {
+        m_lastRenderBackendStats = frameStats;
         logVkResult(acquireResult);
         return false;
     }
 
     if (m_imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        phaseStart = std::chrono::steady_clock::now();
         vkWaitForFences(m_device, 1, &m_imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+        phaseEnd = std::chrono::steady_clock::now();
+        frameStats.imageFenceWaitMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
     }
 
     m_imagesInFlight[imageIndex] = m_inFlightFences[frameIndex];
@@ -627,14 +650,23 @@ bool VulkanContext::renderFrame()
     vkResetFences(m_device, 1, &m_inFlightFences[frameIndex]);
 
     if (m_renderFrontend != nullptr) {
+        phaseStart = std::chrono::steady_clock::now();
         m_renderFrontend->beginFrame();
+        phaseEnd = std::chrono::steady_clock::now();
+        frameStats.frontendMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
     }
 
     VkCommandBuffer commandBuffer = m_commandBuffers[imageIndex];
+    phaseStart = std::chrono::steady_clock::now();
     vkResetCommandBuffer(commandBuffer, 0);
     if (!recordCommandBuffer(commandBuffer, imageIndex)) {
+        phaseEnd = std::chrono::steady_clock::now();
+        frameStats.commandRecordingMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
+        m_lastRenderBackendStats = frameStats;
         return false;
     }
+    phaseEnd = std::chrono::steady_clock::now();
+    frameStats.commandRecordingMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submitInfo{};
@@ -645,11 +677,15 @@ bool VulkanContext::renderFrame()
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[imageIndex];
+    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[frameIndex];
 
+    phaseStart = std::chrono::steady_clock::now();
     {
         std::scoped_lock lock(m_queueSubmitMutex);
         if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[frameIndex]) != VK_SUCCESS) {
+            phaseEnd = std::chrono::steady_clock::now();
+            frameStats.submitPresentMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
+            m_lastRenderBackendStats = frameStats;
             MRD_ERROR("vkQueueSubmit failed");
             return false;
         }
@@ -658,7 +694,7 @@ bool VulkanContext::renderFrame()
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[imageIndex];
+    presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[frameIndex];
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &m_swapchain;
     presentInfo.pImageIndices = &imageIndex;
@@ -668,16 +704,21 @@ bool VulkanContext::renderFrame()
         std::scoped_lock lock(m_queueSubmitMutex);
         presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
     }
+    phaseEnd = std::chrono::steady_clock::now();
+    frameStats.submitPresentMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
     if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+        m_lastRenderBackendStats = frameStats;
         requestPresentationRebuild();
         return false;
     }
     if (presentResult != VK_SUCCESS) {
+        m_lastRenderBackendStats = frameStats;
         logVkResult(presentResult);
         return false;
     }
 
     m_currentFrame = (frameIndex + 1) % m_inFlightFences.size();
+    m_lastRenderBackendStats = frameStats;
     return true;
 }
 

@@ -118,6 +118,7 @@ target_sources(Meridian PRIVATE
     src/networking/NetworkSystem.cpp
     src/scripting/ScriptingSystem.cpp
     src/world/WorldChunkManager.cpp
+    src/world/WorldChunkDatabase.cpp
     src/world/SparseVoxelOctree.cpp
     src/world/TerrainHeightmapGenerator.cpp
     src/world/WorldChunkStorage.cpp

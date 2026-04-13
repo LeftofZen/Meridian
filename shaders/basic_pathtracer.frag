@@ -16,6 +16,10 @@ layout(set = 0, binding = 1, std430) readonly buffer VoxelBuffer {
     uint voxelMaterials[];
 };
 
+layout(set = 0, binding = 2, std430) readonly buffer ChunkLookupBuffer {
+    uint chunkLookup[];
+};
+
 layout(push_constant) uniform PushConstants {
     vec4 sceneMin;
     vec4 sceneMax;
@@ -23,6 +27,8 @@ layout(push_constant) uniform PushConstants {
     vec4 cameraPosition;
     vec4 cameraForward;
     uvec4 settings;
+    ivec4 chunkGridOrigin;
+    uvec4 chunkGridSize;
 } pc;
 
 const float kRayEpsilon = 0.001;
@@ -76,10 +82,10 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
     const float radius = sqrt(u1);
     const float theta = 6.28318530718 * u2;
 
-    const vec3 tangent = normalize(
-        abs(normal.y) < 0.999
-            ? cross(normal, vec3(0.0, 1.0, 0.0))
-            : cross(normal, vec3(1.0, 0.0, 0.0)));
+    const vec3 tangent =
+        abs(normal.y) > 0.5
+            ? vec3(1.0, 0.0, 0.0)
+            : vec3(0.0, 1.0, 0.0);
     const vec3 bitangent = cross(normal, tangent);
 
     const vec3 localDirection = vec3(
@@ -87,10 +93,10 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
         sqrt(max(0.0, 1.0 - u1)),
         radius * sin(theta));
 
-    return normalize(
+    return
         tangent * localDirection.x +
         normal * localDirection.y +
-        bitangent * localDirection.z);
+        bitangent * localDirection.z;
 }
 
 vec3 skyColor(vec3 direction)
@@ -145,7 +151,7 @@ int positiveModInt(int value, int divisor)
 
 int chunkResolution()
 {
-    return pc.settings.w > 0u ? chunks[0].coordAndResolution.w : int(kChunkSize);
+    return pc.chunkGridSize.w > 0u ? int(pc.chunkGridSize.w) : int(kChunkSize);
 }
 
 uint sampleVoxelMaterial(ivec3 worldVoxelCoord)
@@ -159,21 +165,29 @@ uint sampleVoxelMaterial(ivec3 worldVoxelCoord)
         positiveModInt(worldVoxelCoord.x, resolution),
         positiveModInt(worldVoxelCoord.y, resolution),
         positiveModInt(worldVoxelCoord.z, resolution));
+    const ivec3 relativeChunkCoord = chunkCoord - pc.chunkGridOrigin.xyz;
 
-    for (uint chunkIndex = 0u; chunkIndex < pc.settings.w; ++chunkIndex) {
-        if (any(notEqual(chunks[chunkIndex].coordAndResolution.xyz, chunkCoord))) {
-            continue;
-        }
-
-        const uint voxelOffset = chunks[chunkIndex].offsets.x;
-        const uint linearIndex =
-            uint(localCoord.x) +
-            uint(localCoord.y) * uint(resolution) +
-            uint(localCoord.z) * uint(resolution * resolution);
-        return voxelMaterials[voxelOffset + linearIndex];
+    if (any(lessThan(relativeChunkCoord, ivec3(0))) ||
+        any(greaterThanEqual(relativeChunkCoord, ivec3(pc.chunkGridSize.xyz)))) {
+        return kMaterialAir;
     }
 
-    return kMaterialAir;
+    const uint lookupIndex =
+        uint(relativeChunkCoord.x) +
+        uint(relativeChunkCoord.y) * pc.chunkGridSize.x +
+        uint(relativeChunkCoord.z) * pc.chunkGridSize.x * pc.chunkGridSize.y;
+    const uint chunkIndexPlusOne = chunkLookup[lookupIndex];
+    if (chunkIndexPlusOne == 0u) {
+        return kMaterialAir;
+    }
+
+    const GpuChunk chunk = chunks[chunkIndexPlusOne - 1u];
+    const uint voxelOffset = chunk.offsets.x;
+    const uint linearIndex =
+        uint(localCoord.x) +
+        uint(localCoord.y) * uint(resolution) +
+        uint(localCoord.z) * uint(resolution * resolution);
+    return voxelMaterials[voxelOffset + linearIndex];
 }
 
 bool intersectSceneBounds(Ray ray, out float tEnter, out vec3 entryNormal)
@@ -238,8 +252,11 @@ bool sceneIntersect(Ray ray, out Hit hit)
         ray.direction.y == 0.0 ? 1e30 : (nextBoundary.y - ray.origin.y) / ray.direction.y,
         ray.direction.z == 0.0 ? 1e30 : (nextBoundary.z - ray.origin.z) / ray.direction.z);
 
-    const ivec3 sceneMinVoxel = ivec3(floor(pc.sceneMin.xyz));
-    const ivec3 sceneMaxVoxel = ivec3(ceil(pc.sceneMax.xyz));
+    const int resolution = chunkResolution();
+    const ivec3 sceneMinVoxel = pc.chunkGridOrigin.xyz * resolution;
+    const ivec3 sceneMaxVoxel =
+        sceneMinVoxel +
+        ivec3(pc.chunkGridSize.x, pc.chunkGridSize.y, pc.chunkGridSize.z) * resolution;
 
     for (int stepIndex = 0; stepIndex < kMaxDdaSteps; ++stepIndex) {
         const bool outsideScene =
@@ -302,6 +319,10 @@ vec3 tracePath(Ray ray, inout uint rngState)
         }
 
         throughput *= hit.albedo;
+        if (max(throughput.r, max(throughput.g, throughput.b)) < 0.02) {
+            break;
+        }
+
         ray.origin = hit.position + hit.normal * kRayEpsilon;
         ray.direction = sampleCosineHemisphere(hit.normal, rngState);
     }

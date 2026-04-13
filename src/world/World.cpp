@@ -107,6 +107,13 @@ void World::setStreamingCamera(const CameraRenderState& cameraState) noexcept
     }
 }
 
+void World::setStreamingDistanceChunks(float streamingDistanceChunks) noexcept
+{
+    if (m_chunkManager) {
+        m_chunkManager->setStreamingDistanceChunks(streamingDistanceChunks);
+    }
+}
+
 TerrainHeightmapSettings World::terrainSettings() const
 {
     if (!m_heightmapGenerator) {

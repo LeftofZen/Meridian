@@ -10,12 +10,14 @@
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
 namespace Meridian {
 
 class TaskSystem;
+class WorldChunkDatabase;
 
 class WorldChunkManager final {
 public:
@@ -38,6 +40,7 @@ public:
     [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
     void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
+    void setStreamingDistanceChunks(float streamingDistanceChunks) noexcept;
     void rebuildActiveTerrain();
 
 private:
@@ -70,6 +73,8 @@ private:
     void pruneChunksOutsideRetention();
     [[nodiscard]] bool shouldKeepChunk(ChunkCoord coord) const noexcept;
     [[nodiscard]] bool shouldRequestChunk(ChunkCoord coord) const noexcept;
+    [[nodiscard]] int streamRadiusXZ() const noexcept;
+    [[nodiscard]] int retentionRadiusXZ() const noexcept;
 
     [[nodiscard]] static GeneratedChunk generateChunk(
         ChunkCoord coord,
@@ -82,19 +87,20 @@ private:
     [[nodiscard]] static std::vector<VoxelSample> generateDefaultChunkVoxels(ChunkCoord coord);
 
     static constexpr std::size_t kMaxConcurrentJobs{2};
-    static constexpr int kStreamRadiusXZ{2};
-    static constexpr int kRetentionRadiusXZ{3};
     static constexpr int kStreamChunksBelowFocus{3};
     static constexpr int kStreamChunksAboveFocus{1};
     static constexpr int kRetentionChunksBelowFocus{4};
     static constexpr int kRetentionChunksAboveFocus{2};
-    static constexpr float kStreamingLookAheadDistance{96.0F};
+    static constexpr float kDefaultStreamingDistanceChunks{8.0F};
+    static constexpr float kRetentionPaddingChunks{1.0F};
 
     TaskSystem& m_tasks;
     TerrainHeightmapGenerator* m_heightmapGenerator{nullptr};
+    std::shared_ptr<WorldChunkDatabase> m_chunkDatabase;
     bool m_initialised{false};
     bool m_hasStreamingCamera{false};
     ChunkCoord m_streamingFocusChunk{};
+    float m_streamingDistanceChunks{kDefaultStreamingDistanceChunks};
     std::deque<ChunkCoord> m_pendingRequests;
     std::vector<ChunkJob> m_inFlightJobs;
     std::unordered_map<ChunkKey, ChunkRecord> m_chunkRecords;

@@ -43,6 +43,7 @@ public:
     [[nodiscard]] TerrainHeightmapSettings terrainSettings() const;
     void requestTerrainSettings(TerrainHeightmapSettings settings);
     void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
+    void setStreamingDistanceChunks(float streamingDistanceChunks) noexcept;
 
 private:
     void applyPendingTerrainSettings();

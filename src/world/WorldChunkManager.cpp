@@ -1,16 +1,19 @@
 #include "world/WorldChunkManager.hpp"
 
 #include "core/Logger.hpp"
+#include "world/WorldChunkDatabase.hpp"
 #include "world/TerrainHeightmapGenerator.hpp"
 #include "world/SparseVoxelOctree.hpp"
 #include "world/WorldChunkStorage.hpp"
 
 #include "tasks/TaskSystem.hpp"
 
+#include <bit>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 
 namespace Meridian {
 
@@ -159,19 +162,6 @@ struct TerrainMaterialSample {
     return static_cast<int>(std::floor(worldPosition / static_cast<float>(kWorldChunkSize)));
 }
 
-[[nodiscard]] std::array<float, 3> normalizedLookAhead(const CameraRenderState& cameraState) noexcept
-{
-    const float lookX = cameraState.forward[0];
-    const float lookZ = cameraState.forward[2];
-    const float lengthSquared = lookX * lookX + lookZ * lookZ;
-    if (lengthSquared <= 1e-6F) {
-        return {0.0F, 0.0F, 0.0F};
-    }
-
-    const float inverseLength = 1.0F / std::sqrt(lengthSquared);
-    return {lookX * inverseLength, 0.0F, lookZ * inverseLength};
-}
-
 [[nodiscard]] VoxelMaterialId representativeSurfaceMaterial(const WorldChunkStorage& chunk) noexcept
 {
     std::array<std::size_t, 7> counts{};
@@ -206,6 +196,76 @@ struct TerrainMaterialSample {
     return static_cast<VoxelMaterialId>(std::distance(counts.begin(), dominant));
 }
 
+void logResidentChunk(const WorldChunkStorage& chunk, std::size_t residentCount, bool loadedFromDatabase)
+{
+    MRD_INFO(
+        "World chunk [{}, {}, {}] {} (material {}, {}^3 voxels, solid {}, svo nodes {}, resident: {})",
+        chunk.coord().x,
+        chunk.coord().y,
+        chunk.coord().z,
+        loadedFromDatabase ? "loaded from database" : "ready",
+        voxelMaterialName(representativeSurfaceMaterial(chunk)),
+        chunk.voxelResolution(),
+        chunk.solidVoxelCount(),
+        chunk.octree().stats().nodeCount,
+        residentCount);
+}
+
+[[nodiscard]] std::uint64_t hashCombine(std::uint64_t seed, std::uint64_t value) noexcept
+{
+    return seed ^ (value + 0x9E3779B97F4A7C15ULL + (seed << 6U) + (seed >> 2U));
+}
+
+[[nodiscard]] std::uint64_t terrainSettingsSignature(const TerrainHeightmapSettings& settings) noexcept
+{
+    std::uint64_t signature = 0xCBF29CE484222325ULL;
+
+    const auto addInteger = [&signature](std::uint64_t value) {
+        signature = hashCombine(signature, value);
+    };
+    const auto addFloat = [&signature](float value) {
+        signature = hashCombine(signature, static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(value)));
+    };
+
+    addInteger(settings.tileResolution);
+    addInteger(settings.octaveCount);
+    addInteger(settings.heightOctaveCount);
+    addInteger(settings.worldSeed);
+    addFloat(settings.minWorldHeight);
+    addFloat(settings.maxWorldHeight);
+    addFloat(settings.baseFrequency);
+    addFloat(settings.heightFrequency);
+    addFloat(settings.heightAmplitude);
+    addFloat(settings.heightLacunarity);
+    addFloat(settings.heightGain);
+    addFloat(settings.erosionFrequency);
+    addFloat(settings.erosionStrength);
+    addFloat(settings.octaveGain);
+    addFloat(settings.lacunarity);
+    addFloat(settings.cellSizeMultiplier);
+    addFloat(settings.slopeScale);
+    addFloat(settings.stackedDetail);
+    addFloat(settings.normalizationFactor);
+    addFloat(settings.straightSteeringStrength);
+    addFloat(settings.gullyWeight);
+    addFloat(settings.ridgeRounding);
+    addFloat(settings.creaseRounding);
+    addFloat(settings.inputRoundingMultiplier);
+    addFloat(settings.octaveRoundingMultiplier);
+    addFloat(settings.onsetInitial);
+    addFloat(settings.onsetOctave);
+    addFloat(settings.ridgeMapOnsetInitial);
+    addFloat(settings.ridgeMapOnsetOctave);
+    addFloat(settings.heightOffsetBase);
+    addFloat(settings.heightOffsetFadeInfluence);
+    return signature;
+}
+
+[[nodiscard]] std::filesystem::path worldChunkDatabasePath()
+{
+    return std::filesystem::current_path() / "build" / "cache" / "world-chunks";
+}
+
 } // namespace
 
 WorldChunkManager::WorldChunkManager(
@@ -218,6 +278,13 @@ bool WorldChunkManager::init()
     if (!m_tasks.isInitialised()) {
         MRD_ERROR("WorldChunkManager init failed: TaskSystem is not initialised");
         return false;
+    }
+
+    std::shared_ptr<WorldChunkDatabase> chunkDatabase = std::make_shared<WorldChunkDatabase>();
+    if (chunkDatabase->init(worldChunkDatabasePath())) {
+        m_chunkDatabase = std::move(chunkDatabase);
+    } else {
+        MRD_WARN("World chunk database unavailable; falling back to procedural generation only");
     }
 
     m_initialised = true;
@@ -237,6 +304,7 @@ void WorldChunkManager::shutdown()
     m_chunkRecords.clear();
     m_heightmapTiles.clear();
     m_residentChunks.clear();
+    m_chunkDatabase.reset();
     ++m_renderRevision;
     m_initialised = false;
     MRD_INFO("WorldChunkManager shutting down");
@@ -311,16 +379,27 @@ std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
 
 void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState) noexcept
 {
-    const std::array<float, 3> lookAhead = normalizedLookAhead(cameraState);
-    const float focusX = cameraState.position[0] + lookAhead[0] * kStreamingLookAheadDistance;
-    const float focusZ = cameraState.position[2] + lookAhead[2] * kStreamingLookAheadDistance;
-
     m_streamingFocusChunk = ChunkCoord{
-        .x = worldToChunkCoord(focusX),
+        .x = worldToChunkCoord(cameraState.position[0]),
         .y = worldToChunkCoord(cameraState.position[1]),
-        .z = worldToChunkCoord(focusZ),
+        .z = worldToChunkCoord(cameraState.position[2]),
     };
     m_hasStreamingCamera = true;
+}
+
+void WorldChunkManager::setStreamingDistanceChunks(float streamingDistanceChunks) noexcept
+{
+    m_streamingDistanceChunks = std::clamp(streamingDistanceChunks, 1.0F, 32.0F);
+}
+
+int WorldChunkManager::streamRadiusXZ() const noexcept
+{
+    return std::max(1, static_cast<int>(std::ceil(m_streamingDistanceChunks)));
+}
+
+int WorldChunkManager::retentionRadiusXZ() const noexcept
+{
+    return std::max(1, static_cast<int>(std::ceil(m_streamingDistanceChunks + kRetentionPaddingChunks)));
 }
 
 void WorldChunkManager::queueChunksAroundFocus()
@@ -329,14 +408,16 @@ void WorldChunkManager::queueChunksAroundFocus()
         return;
     }
 
+    const int radiusXZ = streamRadiusXZ();
+
     for (int y = m_streamingFocusChunk.y - kStreamChunksBelowFocus;
          y <= m_streamingFocusChunk.y + kStreamChunksAboveFocus;
          ++y) {
-        for (int z = m_streamingFocusChunk.z - kStreamRadiusXZ;
-             z <= m_streamingFocusChunk.z + kStreamRadiusXZ;
+        for (int z = m_streamingFocusChunk.z - radiusXZ;
+             z <= m_streamingFocusChunk.z + radiusXZ;
              ++z) {
-            for (int x = m_streamingFocusChunk.x - kStreamRadiusXZ;
-                 x <= m_streamingFocusChunk.x + kStreamRadiusXZ;
+            for (int x = m_streamingFocusChunk.x - radiusXZ;
+                 x <= m_streamingFocusChunk.x + radiusXZ;
                  ++x) {
                 requestChunk(ChunkCoord{.x = x, .y = y, .z = z});
             }
@@ -350,9 +431,10 @@ bool WorldChunkManager::shouldKeepChunk(ChunkCoord coord) const noexcept
         return true;
     }
 
+    const int radiusXZ = retentionRadiusXZ();
     const bool withinXZ =
-        std::abs(coord.x - m_streamingFocusChunk.x) <= kRetentionRadiusXZ &&
-        std::abs(coord.z - m_streamingFocusChunk.z) <= kRetentionRadiusXZ;
+        std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
+        std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
     const bool withinY =
         coord.y >= m_streamingFocusChunk.y - kRetentionChunksBelowFocus &&
         coord.y <= m_streamingFocusChunk.y + kRetentionChunksAboveFocus;
@@ -365,9 +447,10 @@ bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
         return true;
     }
 
+    const int radiusXZ = streamRadiusXZ();
     const bool withinXZ =
-        std::abs(coord.x - m_streamingFocusChunk.x) <= kStreamRadiusXZ &&
-        std::abs(coord.z - m_streamingFocusChunk.z) <= kStreamRadiusXZ;
+        std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
+        std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
     const bool withinY =
         coord.y >= m_streamingFocusChunk.y - kStreamChunksBelowFocus &&
         coord.y <= m_streamingFocusChunk.y + kStreamChunksAboveFocus;
@@ -377,6 +460,7 @@ bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
 void WorldChunkManager::pruneChunksOutsideRetention()
 {
     bool removedResidentChunk = false;
+    const int radiusXZ = retentionRadiusXZ();
 
     for (auto it = m_residentChunks.chunks().begin(); it != m_residentChunks.chunks().end();) {
         const ChunkCoord coord = it->second.coord();
@@ -416,8 +500,8 @@ void WorldChunkManager::pruneChunksOutsideRetention()
     for (auto tileIt = m_heightmapTiles.begin(); tileIt != m_heightmapTiles.end();) {
         const ChunkCoord coord = tileIt->second.coord;
         const bool withinRetention =
-            std::abs(coord.x - m_streamingFocusChunk.x) <= kRetentionRadiusXZ &&
-            std::abs(coord.z - m_streamingFocusChunk.z) <= kRetentionRadiusXZ;
+            std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
+            std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
         if (withinRetention) {
             ++tileIt;
             continue;
@@ -479,10 +563,28 @@ void WorldChunkManager::dispatchChunkJobs()
             continue;
         }
 
+        const TerrainHeightmapSettings heightmapSettings =
+            m_heightmapGenerator != nullptr ? m_heightmapGenerator->settings() : TerrainHeightmapSettings{};
+        const std::uint64_t settingsSignature = terrainSettingsSignature(heightmapSettings);
+        if (m_chunkDatabase != nullptr) {
+            if (std::optional<WorldChunkStorage> cachedChunk =
+                    m_chunkDatabase->loadChunk(coord, key, settingsSignature);
+                cachedChunk.has_value()) {
+                chunkIt->second.status = ChunkStatus::Resident;
+                m_residentChunks.upsert(std::move(*cachedChunk));
+                ++m_renderRevision;
+
+                if (const WorldChunkStorage* residentChunk = m_residentChunks.find(key);
+                    residentChunk != nullptr) {
+                    logResidentChunk(*residentChunk, getResidentChunkCount(), true);
+                }
+                continue;
+            }
+        }
+
         chunkIt->second.status = ChunkStatus::Generating;
 
         TerrainHeightmapTile heightmapTile;
-        TerrainHeightmapSettings heightmapSettings;
         if (m_heightmapGenerator != nullptr) {
             const ChunkKey tileKey = heightmapTileKey(coord);
             auto tileIt = m_heightmapTiles.find(tileKey);
@@ -493,14 +595,23 @@ void WorldChunkManager::dispatchChunkJobs()
             }
 
             heightmapTile = tileIt->second;
-            heightmapSettings = m_heightmapGenerator->settings();
         }
 
         m_inFlightJobs.push_back(ChunkJob{
             .coord = coord,
             .key = key,
-            .future = m_tasks.async([coord, heightmapTile, heightmapSettings]() {
-                return WorldChunkManager::generateChunk(coord, heightmapTile, heightmapSettings);
+            .future = m_tasks.async([
+                coord,
+                heightmapTile,
+                heightmapSettings,
+                settingsSignature,
+                chunkDatabase = m_chunkDatabase]() {
+                GeneratedChunk generatedChunk =
+                    WorldChunkManager::generateChunk(coord, heightmapTile, heightmapSettings);
+                if (chunkDatabase != nullptr) {
+                    (void)chunkDatabase->storeChunk(generatedChunk.chunkStorage, settingsSignature);
+                }
+                return generatedChunk;
             }),
         });
     }
@@ -539,16 +650,7 @@ void WorldChunkManager::collectCompletedJobs()
                 return true;
             }
 
-            MRD_INFO(
-                "World chunk [{}, {}, {}] ready (material {}, {}^3 voxels, solid {}, svo nodes {}, resident: {})",
-                residentChunk->coord().x,
-                residentChunk->coord().y,
-                residentChunk->coord().z,
-                voxelMaterialName(representativeSurfaceMaterial(*residentChunk)),
-                residentChunk->voxelResolution(),
-                residentChunk->solidVoxelCount(),
-                residentChunk->octree().stats().nodeCount,
-                getResidentChunkCount());
+            logResidentChunk(*residentChunk, getResidentChunkCount(), false);
             return true;
         });
 

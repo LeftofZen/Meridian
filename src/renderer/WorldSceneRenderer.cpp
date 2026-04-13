@@ -54,6 +54,19 @@ void WorldSceneRenderer::beginFrame()
     ImGui::TextWrapped(
         "This module now consumes a render-state snapshot, which is the place to grow world-facing data like camera state, lighting state, and GPU residency without coupling scene rendering to the simulation thread.");
     ImGui::Text("Present mode: %s", m_context->getPresentModeName());
+    ImGui::Spacing();
+
+    float renderDistanceChunks = m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks;
+    if (ImGui::SliderFloat("Render Distance (chunks)", &renderDistanceChunks, 1.0F, 32.0F, "%.1f")) {
+        m_renderStateStore->setWorldRenderDistanceChunks(renderDistanceChunks);
+        m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks = renderDistanceChunks;
+    }
+
+    ImGui::Text(
+        "Approx render radius: %.0f m",
+        m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks * 32.0F);
+    ImGui::TextWrapped(
+        "This distance now drives both path-traced chunk visibility and world chunk generation around the camera. Higher values will stream and keep more terrain resident.");
     ImGui::End();
 }
 

@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 
 namespace Meridian {
 
@@ -24,6 +25,7 @@ public:
 
     [[nodiscard]] PathTracerSettings& settings() noexcept { return m_settings; }
     [[nodiscard]] const PathTracerSettings& settings() const noexcept { return m_settings; }
+    [[nodiscard]] const char* profileName() const noexcept override { return "Path Tracer"; }
 
     void setRenderStateStore(RenderStateStore& renderStateStore) noexcept
     {
@@ -61,11 +63,31 @@ private:
         std::array<float, 4> cameraPosition{};
         std::array<float, 4> cameraForward{};
         std::array<std::uint32_t, 4> settings{};
+        std::array<std::int32_t, 4> chunkGridOrigin{};
+        std::array<std::uint32_t, 4> chunkGridSize{};
+    };
+
+    struct FrameResources {
+        VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+        GpuBuffer chunkBuffer;
+        GpuBuffer voxelBuffer;
+        GpuBuffer chunkLookupBuffer;
+        std::size_t uploadedChunkCount{0};
+        std::size_t uploadedVoxelCount{0};
+        std::uint64_t worldRevision{~0ULL};
+        std::array<float, 3> sceneMin{-1.0F, -1.0F, -1.0F};
+        std::array<float, 3> sceneMax{1.0F, 1.0F, 1.0F};
+        std::array<std::int32_t, 3> chunkGridOrigin{0, 0, 0};
+        std::array<std::uint32_t, 3> chunkGridSize{1, 1, 1};
+        std::array<std::int32_t, 3> cameraChunkCoord{0, 0, 0};
+        std::uint32_t chunkResolution{32};
+        float renderDistanceChunks{8.0F};
+        std::uint64_t renderSettingsRevision{~0ULL};
     };
 
     [[nodiscard]] bool createDescriptorResources();
     [[nodiscard]] bool createPipeline();
-    [[nodiscard]] bool uploadWorldData();
+    [[nodiscard]] bool uploadWorldData(FrameResources& frameResources);
     [[nodiscard]] bool ensureBufferCapacity(GpuBuffer& buffer, VkDeviceSize sizeInBytes);
     [[nodiscard]] bool createBuffer(
         VkDeviceSize sizeInBytes,
@@ -86,16 +108,10 @@ private:
     PathTracerSettings m_settings;
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
-    VkDescriptorSet m_descriptorSet{VK_NULL_HANDLE};
     VkPipelineLayout m_pipelineLayout{VK_NULL_HANDLE};
     VkPipeline m_pipeline{VK_NULL_HANDLE};
-    GpuBuffer m_chunkBuffer;
-    GpuBuffer m_voxelBuffer;
-    std::size_t m_uploadedChunkCount{0};
-    std::size_t m_uploadedVoxelCount{0};
-    std::uint64_t m_worldRevision{0};
-    std::array<float, 3> m_sceneMin{};
-    std::array<float, 3> m_sceneMax{};
+    std::vector<FrameResources> m_frameResources;
+    std::size_t m_currentFrameSlot{0};
     std::uint32_t m_frameIndex{0};
 };
 

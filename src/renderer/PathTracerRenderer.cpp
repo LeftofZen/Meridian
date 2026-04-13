@@ -4,7 +4,9 @@
 #include "renderer/ShaderLibrary.hpp"
 #include "renderer/VulkanContext.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -15,6 +17,35 @@ namespace {
 
 constexpr VkViewport kDefaultViewport{};
 
+[[nodiscard]] std::int32_t worldToChunkCoord(float worldPosition, std::uint32_t chunkResolution) noexcept
+{
+    return static_cast<std::int32_t>(
+        std::floor(worldPosition / std::max(1.0F, static_cast<float>(chunkResolution))));
+}
+
+[[nodiscard]] std::array<std::int32_t, 3> cameraChunkCoord(
+    const CameraRenderState& camera,
+    std::uint32_t chunkResolution) noexcept
+{
+    return {
+        worldToChunkCoord(camera.position[0], chunkResolution),
+        worldToChunkCoord(camera.position[1], chunkResolution),
+        worldToChunkCoord(camera.position[2], chunkResolution),
+    };
+}
+
+[[nodiscard]] bool shouldRenderChunk(
+    const WorldChunkRenderData& chunk,
+    const std::array<std::int32_t, 3>& cameraChunk,
+    float renderDistanceChunks) noexcept
+{
+    const float deltaX = static_cast<float>(chunk.coord.x - cameraChunk[0]);
+    const float deltaY = static_cast<float>(chunk.coord.y - cameraChunk[1]);
+    const float deltaZ = static_cast<float>(chunk.coord.z - cameraChunk[2]);
+    const float distanceSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+    return distanceSquared <= renderDistanceChunks * renderDistanceChunks;
+}
+
 } // namespace
 
 bool PathTracerRenderer::init(VulkanContext& context)
@@ -23,11 +54,9 @@ bool PathTracerRenderer::init(VulkanContext& context)
 
     m_context = &context;
     m_settings.clamp();
+    m_renderStateSnapshot = RenderStateSnapshot{};
+    m_currentFrameSlot = 0;
     m_frameIndex = 0;
-    m_uploadedChunkCount = 0;
-    m_uploadedVoxelCount = 0;
-    m_sceneMin = {-1.0F, -1.0F, -1.0F};
-    m_sceneMax = {1.0F, 1.0F, 1.0F};
 
     if (!createDescriptorResources()) {
         return false;
@@ -38,7 +67,7 @@ bool PathTracerRenderer::init(VulkanContext& context)
         return false;
     }
 
-    return uploadWorldData();
+    return true;
 }
 
 void PathTracerRenderer::shutdown()
@@ -46,9 +75,8 @@ void PathTracerRenderer::shutdown()
     destroyPipeline();
     destroyDescriptorResources();
     m_context = nullptr;
+    m_currentFrameSlot = 0;
     m_frameIndex = 0;
-    m_uploadedChunkCount = 0;
-    m_uploadedVoxelCount = 0;
 }
 
 void PathTracerRenderer::configureFrame(RenderFrameConfig& config)
@@ -59,27 +87,46 @@ void PathTracerRenderer::configureFrame(RenderFrameConfig& config)
 void PathTracerRenderer::beginFrame()
 {
     m_settings.clamp();
+    if (m_context == nullptr || m_frameResources.empty()) {
+        return;
+    }
+
+    m_currentFrameSlot = m_context->getCurrentFrameSlot();
+    if (m_currentFrameSlot >= m_frameResources.size()) {
+        m_currentFrameSlot = 0;
+    }
+
+    FrameResources& frameResources = m_frameResources[m_currentFrameSlot];
 
     if (m_renderStateStore != nullptr) {
         m_renderStateSnapshot = m_renderStateStore->snapshot();
+        const std::array<std::int32_t, 3> currentCameraChunkCoord = cameraChunkCoord(
+            m_renderStateSnapshot.camera,
+            frameResources.chunkResolution);
         const bool worldChanged =
-            m_renderStateSnapshot.world.revision != m_worldRevision ||
-            m_renderStateSnapshot.world.residentChunkCount != m_uploadedChunkCount ||
-            m_renderStateSnapshot.world.uploadedVoxelCount != m_uploadedVoxelCount;
+            m_renderStateSnapshot.world.revision != frameResources.worldRevision ||
+            m_renderStateSnapshot.worldRenderSettings.revision != frameResources.renderSettingsRevision ||
+            currentCameraChunkCoord != frameResources.cameraChunkCoord;
 
         if (worldChanged) {
-            vkDeviceWaitIdle(m_context->getDevice());
-            if (!uploadWorldData()) {
+            if (!uploadWorldData(frameResources)) {
                 MRD_WARN("Path tracer world upload failed");
             }
-            m_worldRevision = m_renderStateSnapshot.world.revision;
         }
     }
 }
 
 void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
 {
-    if (m_context == nullptr || m_pipeline == VK_NULL_HANDLE || m_pipelineLayout == VK_NULL_HANDLE) {
+    if (m_context == nullptr ||
+        m_pipeline == VK_NULL_HANDLE ||
+        m_pipelineLayout == VK_NULL_HANDLE ||
+        m_frameResources.empty()) {
+        return;
+    }
+
+    const FrameResources& frameResources = m_frameResources[m_currentFrameSlot];
+    if (frameResources.descriptorSet == VK_NULL_HANDLE) {
         return;
     }
 
@@ -99,15 +146,15 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
 
     const PushConstants pushConstants{
         .sceneMin = {
-            m_sceneMin[0],
-            m_sceneMin[1],
-            m_sceneMin[2],
+            frameResources.sceneMin[0],
+            frameResources.sceneMin[1],
+            frameResources.sceneMin[2],
             0.0F,
         },
         .sceneMax = {
-            m_sceneMax[0],
-            m_sceneMax[1],
-            m_sceneMax[2],
+            frameResources.sceneMax[0],
+            frameResources.sceneMax[1],
+            frameResources.sceneMax[2],
             0.0F,
         },
         .frameData = {
@@ -132,7 +179,19 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
             m_frameIndex++,
             static_cast<std::uint32_t>(m_settings.samplesPerPixel),
             static_cast<std::uint32_t>(m_settings.maxBounces),
-            static_cast<std::uint32_t>(m_uploadedChunkCount),
+            static_cast<std::uint32_t>(frameResources.uploadedChunkCount),
+        },
+        .chunkGridOrigin = {
+            frameResources.chunkGridOrigin[0],
+            frameResources.chunkGridOrigin[1],
+            frameResources.chunkGridOrigin[2],
+            0,
+        },
+        .chunkGridSize = {
+            frameResources.chunkGridSize[0],
+            frameResources.chunkGridSize[1],
+            frameResources.chunkGridSize[2],
+            frameResources.chunkResolution,
         },
     };
 
@@ -145,7 +204,7 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
         m_pipelineLayout,
         0,
         1,
-        &m_descriptorSet,
+        &frameResources.descriptorSet,
         0,
         nullptr);
     vkCmdPushConstants(
@@ -164,6 +223,9 @@ bool PathTracerRenderer::createDescriptorResources()
         return false;
     }
 
+    const std::size_t frameCount = std::max<std::size_t>(1, m_context->getFramesInFlightCount());
+    m_frameResources.assign(frameCount, FrameResources{});
+
     const VkDescriptorSetLayoutBinding bindings[] = {
         VkDescriptorSetLayoutBinding{
             .binding = 0,
@@ -177,11 +239,17 @@ bool PathTracerRenderer::createDescriptorResources()
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        VkDescriptorSetLayoutBinding{
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(
@@ -196,13 +264,13 @@ bool PathTracerRenderer::createDescriptorResources()
     const VkDescriptorPoolSize poolSizes[] = {
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 2,
+            .descriptorCount = static_cast<std::uint32_t>(frameCount * 3U),
         },
     };
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = static_cast<std::uint32_t>(frameCount);
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = poolSizes;
 
@@ -218,15 +286,21 @@ bool PathTracerRenderer::createDescriptorResources()
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = m_descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_descriptorSetLayout;
+    std::vector<VkDescriptorSetLayout> layouts(frameCount, m_descriptorSetLayout);
+    std::vector<VkDescriptorSet> descriptorSets(frameCount, VK_NULL_HANDLE);
+    allocInfo.descriptorSetCount = static_cast<std::uint32_t>(frameCount);
+    allocInfo.pSetLayouts = layouts.data();
 
     if (vkAllocateDescriptorSets(
             m_context->getDevice(),
             &allocInfo,
-            &m_descriptorSet) != VK_SUCCESS) {
+            descriptorSets.data()) != VK_SUCCESS) {
         MRD_ERROR("Failed to allocate path tracer descriptor set");
         return false;
+    }
+
+    for (std::size_t index = 0; index < frameCount; ++index) {
+        m_frameResources[index].descriptorSet = descriptorSets[index];
     }
 
     return true;
@@ -366,14 +440,23 @@ bool PathTracerRenderer::createPipeline()
     return true;
 }
 
-bool PathTracerRenderer::uploadWorldData()
+bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
 {
-    if (m_context == nullptr || m_descriptorSet == VK_NULL_HANDLE) {
+    if (m_context == nullptr || frameResources.descriptorSet == VK_NULL_HANDLE) {
         return false;
     }
 
+    const float renderDistanceChunks =
+        m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks;
+    const std::uint32_t chunkResolution = m_renderStateSnapshot.world.chunks.empty()
+        ? frameResources.chunkResolution
+        : m_renderStateSnapshot.world.chunks.front().voxelResolution;
+    const std::array<std::int32_t, 3> currentCameraChunkCoord =
+        cameraChunkCoord(m_renderStateSnapshot.camera, chunkResolution);
+
     std::vector<GpuChunkRecord> chunkRecords;
     std::vector<std::uint32_t> voxelMaterials;
+    std::vector<std::uint32_t> chunkLookup;
     chunkRecords.reserve(m_renderStateSnapshot.world.chunks.size());
     voxelMaterials.reserve(m_renderStateSnapshot.world.uploadedVoxelCount);
 
@@ -387,8 +470,22 @@ bool PathTracerRenderer::uploadWorldData()
         std::numeric_limits<float>::lowest(),
         std::numeric_limits<float>::lowest(),
     };
+    std::array<std::int32_t, 3> minChunkCoord{
+        std::numeric_limits<std::int32_t>::max(),
+        std::numeric_limits<std::int32_t>::max(),
+        std::numeric_limits<std::int32_t>::max(),
+    };
+    std::array<std::int32_t, 3> maxChunkCoord{
+        std::numeric_limits<std::int32_t>::lowest(),
+        std::numeric_limits<std::int32_t>::lowest(),
+        std::numeric_limits<std::int32_t>::lowest(),
+    };
 
     for (const WorldChunkRenderData& chunk : m_renderStateSnapshot.world.chunks) {
+        if (!shouldRenderChunk(chunk, currentCameraChunkCoord, renderDistanceChunks)) {
+            continue;
+        }
+
         const std::uint32_t voxelOffset = static_cast<std::uint32_t>(voxelMaterials.size());
         voxelMaterials.insert(
             voxelMaterials.end(),
@@ -403,6 +500,13 @@ bool PathTracerRenderer::uploadWorldData()
             .voxelOffset = voxelOffset,
             .voxelCount = static_cast<std::uint32_t>(chunk.materialIds.size()),
         });
+
+        minChunkCoord[0] = std::min(minChunkCoord[0], chunk.coord.x);
+        minChunkCoord[1] = std::min(minChunkCoord[1], chunk.coord.y);
+        minChunkCoord[2] = std::min(minChunkCoord[2], chunk.coord.z);
+        maxChunkCoord[0] = std::max(maxChunkCoord[0], chunk.coord.x);
+        maxChunkCoord[1] = std::max(maxChunkCoord[1], chunk.coord.y);
+        maxChunkCoord[2] = std::max(maxChunkCoord[2], chunk.coord.z);
 
         const float chunkMinX = static_cast<float>(chunk.coord.x * static_cast<int>(chunk.voxelResolution));
         const float chunkMinY = static_cast<float>(chunk.coord.y * static_cast<int>(chunk.voxelResolution));
@@ -422,52 +526,122 @@ bool PathTracerRenderer::uploadWorldData()
     if (chunkRecords.empty()) {
         chunkRecords.push_back(GpuChunkRecord{});
         voxelMaterials.push_back(0U);
+        chunkLookup.push_back(0U);
         sceneMin = {-1.0F, -1.0F, -1.0F};
         sceneMax = {1.0F, 1.0F, 1.0F};
-        m_uploadedChunkCount = 0;
-        m_uploadedVoxelCount = 0;
+        frameResources.chunkGridOrigin = {0, 0, 0};
+        frameResources.chunkGridSize = {1, 1, 1};
+        frameResources.chunkResolution = 32;
+        frameResources.uploadedChunkCount = 0;
+        frameResources.uploadedVoxelCount = 0;
     } else {
-        m_uploadedChunkCount = m_renderStateSnapshot.world.chunks.size();
-        m_uploadedVoxelCount = m_renderStateSnapshot.world.uploadedVoxelCount;
+        frameResources.chunkGridOrigin = minChunkCoord;
+        frameResources.chunkGridSize = {
+            static_cast<std::uint32_t>(maxChunkCoord[0] - minChunkCoord[0] + 1),
+            static_cast<std::uint32_t>(maxChunkCoord[1] - minChunkCoord[1] + 1),
+            static_cast<std::uint32_t>(maxChunkCoord[2] - minChunkCoord[2] + 1),
+        };
+        frameResources.chunkResolution = chunkRecords.front().voxelResolution;
+
+        chunkLookup.assign(
+            static_cast<std::size_t>(frameResources.chunkGridSize[0]) *
+                static_cast<std::size_t>(frameResources.chunkGridSize[1]) *
+                static_cast<std::size_t>(frameResources.chunkGridSize[2]),
+            0U);
+
+        for (std::size_t chunkIndex = 0; chunkIndex < chunkRecords.size(); ++chunkIndex) {
+            const GpuChunkRecord& chunkRecord = chunkRecords[chunkIndex];
+            const std::uint32_t relativeX =
+                static_cast<std::uint32_t>(chunkRecord.coordX - frameResources.chunkGridOrigin[0]);
+            const std::uint32_t relativeY =
+                static_cast<std::uint32_t>(chunkRecord.coordY - frameResources.chunkGridOrigin[1]);
+            const std::uint32_t relativeZ =
+                static_cast<std::uint32_t>(chunkRecord.coordZ - frameResources.chunkGridOrigin[2]);
+            const std::size_t lookupIndex =
+                static_cast<std::size_t>(relativeX) +
+                static_cast<std::size_t>(relativeY) *
+                    static_cast<std::size_t>(frameResources.chunkGridSize[0]) +
+                static_cast<std::size_t>(relativeZ) *
+                    static_cast<std::size_t>(frameResources.chunkGridSize[0]) *
+                    static_cast<std::size_t>(frameResources.chunkGridSize[1]);
+            chunkLookup[lookupIndex] = static_cast<std::uint32_t>(chunkIndex) + 1U;
+        }
+
+        frameResources.uploadedChunkCount = m_renderStateSnapshot.world.chunks.size();
+        frameResources.uploadedVoxelCount = m_renderStateSnapshot.world.uploadedVoxelCount;
     }
 
-    m_sceneMin = sceneMin;
-    m_sceneMax = sceneMax;
+    frameResources.sceneMin = sceneMin;
+    frameResources.sceneMax = sceneMax;
+    frameResources.worldRevision = m_renderStateSnapshot.world.revision;
+    frameResources.cameraChunkCoord = currentCameraChunkCoord;
+    frameResources.renderDistanceChunks = renderDistanceChunks;
+    frameResources.renderSettingsRevision = m_renderStateSnapshot.worldRenderSettings.revision;
 
     const VkDeviceSize chunkBufferSize =
         static_cast<VkDeviceSize>(chunkRecords.size() * sizeof(GpuChunkRecord));
     const VkDeviceSize voxelBufferSize =
         static_cast<VkDeviceSize>(voxelMaterials.size() * sizeof(std::uint32_t));
+    const VkDeviceSize chunkLookupBufferSize =
+        static_cast<VkDeviceSize>(chunkLookup.size() * sizeof(std::uint32_t));
 
-    if (!ensureBufferCapacity(m_chunkBuffer, chunkBufferSize) ||
-        !ensureBufferCapacity(m_voxelBuffer, voxelBufferSize)) {
+    if (!ensureBufferCapacity(frameResources.chunkBuffer, chunkBufferSize) ||
+        !ensureBufferCapacity(frameResources.voxelBuffer, voxelBufferSize) ||
+        !ensureBufferCapacity(frameResources.chunkLookupBuffer, chunkLookupBufferSize)) {
         return false;
     }
 
     void* mappedData = nullptr;
-    vkMapMemory(m_context->getDevice(), m_chunkBuffer.memory, 0, chunkBufferSize, 0, &mappedData);
+    vkMapMemory(
+        m_context->getDevice(),
+        frameResources.chunkBuffer.memory,
+        0,
+        chunkBufferSize,
+        0,
+        &mappedData);
     std::memcpy(mappedData, chunkRecords.data(), static_cast<std::size_t>(chunkBufferSize));
-    vkUnmapMemory(m_context->getDevice(), m_chunkBuffer.memory);
+    vkUnmapMemory(m_context->getDevice(), frameResources.chunkBuffer.memory);
 
-    vkMapMemory(m_context->getDevice(), m_voxelBuffer.memory, 0, voxelBufferSize, 0, &mappedData);
+    vkMapMemory(
+        m_context->getDevice(),
+        frameResources.voxelBuffer.memory,
+        0,
+        voxelBufferSize,
+        0,
+        &mappedData);
     std::memcpy(mappedData, voxelMaterials.data(), static_cast<std::size_t>(voxelBufferSize));
-    vkUnmapMemory(m_context->getDevice(), m_voxelBuffer.memory);
+    vkUnmapMemory(m_context->getDevice(), frameResources.voxelBuffer.memory);
+
+    vkMapMemory(
+        m_context->getDevice(),
+        frameResources.chunkLookupBuffer.memory,
+        0,
+        chunkLookupBufferSize,
+        0,
+        &mappedData);
+    std::memcpy(mappedData, chunkLookup.data(), static_cast<std::size_t>(chunkLookupBufferSize));
+    vkUnmapMemory(m_context->getDevice(), frameResources.chunkLookupBuffer.memory);
 
     const VkDescriptorBufferInfo chunkBufferInfo{
-        .buffer = m_chunkBuffer.buffer,
+        .buffer = frameResources.chunkBuffer.buffer,
         .offset = 0,
         .range = chunkBufferSize,
     };
     const VkDescriptorBufferInfo voxelBufferInfo{
-        .buffer = m_voxelBuffer.buffer,
+        .buffer = frameResources.voxelBuffer.buffer,
         .offset = 0,
         .range = voxelBufferSize,
+    };
+    const VkDescriptorBufferInfo chunkLookupBufferInfo{
+        .buffer = frameResources.chunkLookupBuffer.buffer,
+        .offset = 0,
+        .range = chunkLookupBufferSize,
     };
 
     const VkWriteDescriptorSet writes[] = {
         VkWriteDescriptorSet{
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = m_descriptorSet,
+            .dstSet = frameResources.descriptorSet,
             .dstBinding = 0,
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -475,15 +649,23 @@ bool PathTracerRenderer::uploadWorldData()
         },
         VkWriteDescriptorSet{
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = m_descriptorSet,
+            .dstSet = frameResources.descriptorSet,
             .dstBinding = 1,
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .pBufferInfo = &voxelBufferInfo,
         },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.descriptorSet,
+            .dstBinding = 2,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo = &chunkLookupBufferInfo,
+        },
     };
 
-    vkUpdateDescriptorSets(m_context->getDevice(), 2, writes, 0, nullptr);
+    vkUpdateDescriptorSets(m_context->getDevice(), 3, writes, 0, nullptr);
     return true;
 }
 
@@ -539,7 +721,7 @@ bool PathTracerRenderer::createBuffer(
         return false;
     }
 
-    buffer.size = memoryRequirements.size;
+    buffer.size = sizeInBytes;
     return true;
 }
 
@@ -558,8 +740,13 @@ void PathTracerRenderer::destroyPipeline() noexcept
 
 void PathTracerRenderer::destroyDescriptorResources() noexcept
 {
-    destroyBuffer(m_chunkBuffer);
-    destroyBuffer(m_voxelBuffer);
+    for (FrameResources& frameResources : m_frameResources) {
+        destroyBuffer(frameResources.chunkBuffer);
+        destroyBuffer(frameResources.voxelBuffer);
+        destroyBuffer(frameResources.chunkLookupBuffer);
+        frameResources.descriptorSet = VK_NULL_HANDLE;
+    }
+    m_frameResources.clear();
 
     if (m_context != nullptr && m_descriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(m_context->getDevice(), m_descriptorPool, nullptr);
@@ -570,8 +757,6 @@ void PathTracerRenderer::destroyDescriptorResources() noexcept
         vkDestroyDescriptorSetLayout(m_context->getDevice(), m_descriptorSetLayout, nullptr);
         m_descriptorSetLayout = VK_NULL_HANDLE;
     }
-
-    m_descriptorSet = VK_NULL_HANDLE;
 }
 
 void PathTracerRenderer::destroyBuffer(GpuBuffer& buffer) noexcept
