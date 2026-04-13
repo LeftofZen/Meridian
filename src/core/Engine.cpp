@@ -80,6 +80,14 @@ bool Engine::init()
     }
     MRD_INFO("[OK] ScriptingSystem");
 
+    // ── World ─────────────────────────────────────────────────────────────
+    m_world = std::make_unique<World>();
+    if (!m_world->init()) {
+        MRD_CRITICAL("World init failed");
+        return false;
+    }
+    MRD_INFO("[OK] World");
+
     MRD_INFO("=== All systems operational ===");
     return true;
 }
@@ -99,7 +107,7 @@ void Engine::run()
 void Engine::shutdown()
 {
     // Guard against double-shutdown (destructor also calls this)
-    if (!m_scripting && !m_network && !m_ecs && !m_physics &&
+    if (!m_world && !m_scripting && !m_network && !m_ecs && !m_physics &&
         !m_audio && !m_vulkan && !m_window && !m_tasks) {
         return;
     }
@@ -107,6 +115,7 @@ void Engine::shutdown()
     MRD_INFO("=== Meridian engine shutting down ===");
 
     // Reset in reverse init order; each destructor calls its own shutdown()
+    m_world.reset();
     m_scripting.reset();
     m_network.reset();
     m_ecs.reset();

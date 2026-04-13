@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 4.2.0)
 
 project(Meridian
     VERSION 0.1.0
@@ -6,24 +6,29 @@ project(Meridian
     LANGUAGES CXX
 )
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if (NOT MSVC)
-    message(FATAL_ERROR "Meridian currently supports only MSVC from Visual Studio 2026.")
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
 endif()
 
-if (MSVC_VERSION LESS 1950)
+if (NOT MSVC)
+    message(FATAL_ERROR "Meridian supports Visual Studio 2026 with MSVC, or clang-cl in VS Code using the MSVC-compatible toolchain.")
+endif()
+
+if (MSVC_VERSION LESS 1950 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     message(FATAL_ERROR "Meridian requires the Visual Studio 2026 toolset (MSVC 19.50 or newer).")
 endif()
 
-find_package(SDL3 REQUIRED CONFIG)
+find_package(SDL3 CONFIG REQUIRED)
 find_package(volk CONFIG REQUIRED)
-find_package(Jolt REQUIRED CONFIG)
-find_package(EnTT REQUIRED CONFIG)
-find_package(GameNetworkingSockets REQUIRED CONFIG)
-find_package(OpenVDB REQUIRED)
+find_package(Jolt CONFIG REQUIRED)
+find_package(EnTT CONFIG REQUIRED)
+find_package(GameNetworkingSockets CONFIG REQUIRED)
 find_package(unofficial-lmdb CONFIG REQUIRED)
 find_package(SQLiteCpp REQUIRED)
 find_package(steam-audio CONFIG REQUIRED)
@@ -37,7 +42,9 @@ find_package(sol2 CONFIG REQUIRED)
 find_package(RecastNavigation CONFIG REQUIRED)
 find_package(Taskflow CONFIG REQUIRED)
 
-set(MERIDIAN_SOURCES
+add_executable(Meridian)
+
+target_sources(Meridian PRIVATE
     src/main.cpp
     src/core/Engine.cpp
     src/window/Window.cpp
@@ -46,9 +53,8 @@ set(MERIDIAN_SOURCES
     src/physics/PhysicsSystem.cpp
     src/networking/NetworkSystem.cpp
     src/scripting/ScriptingSystem.cpp
+    src/world/World.cpp
 )
-
-add_executable(Meridian ${MERIDIAN_SOURCES})
 
 target_include_directories(Meridian PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -60,7 +66,6 @@ target_link_libraries(Meridian PRIVATE
     Jolt::Jolt
     EnTT::EnTT
     GameNetworkingSockets::GameNetworkingSockets
-    OpenVDB::openvdb
     unofficial::lmdb::lmdb
     SQLiteCpp
     unofficial::steam-audio::phonon
@@ -76,7 +81,9 @@ target_link_libraries(Meridian PRIVATE
     Taskflow::Taskflow
 )
 
-target_compile_options(Meridian PRIVATE /W4 /permissive-)
+if (MSVC)
+    target_compile_options(Meridian PRIVATE /W4 /permissive-)
+endif()
 
 target_compile_definitions(Meridian PRIVATE
     SOL_ALL_SAFETIES_ON=1
