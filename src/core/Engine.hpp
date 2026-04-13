@@ -6,14 +6,21 @@
 #include "ecs/ECSSystem.hpp"
 #include "networking/NetworkSystem.hpp"
 #include "physics/PhysicsSystem.hpp"
+#include "renderer/DebugOverlayRenderer.hpp"
+#include "renderer/PathTracerRenderer.hpp"
+#include "renderer/RenderFramePipeline.hpp"
+#include "renderer/RenderStateStore.hpp"
 #include "renderer/VulkanContext.hpp"
+#include "renderer/WorldSceneRenderer.hpp"
 #include "scripting/ScriptingSystem.hpp"
 #include "tasks/TaskSystem.hpp"
 #include "window/Window.hpp"
 #include "world/World.hpp"
 
 #include <array>
+#include <atomic>
 #include <memory>
+#include <thread>
 
 namespace Meridian {
 
@@ -48,6 +55,9 @@ public:
     [[nodiscard]] World& getWorld() noexcept { return *m_world; }
 
 private:
+    void startRenderLoop();
+    void stopRenderLoop();
+
     static constexpr std::array<SystemFrameStat, 9> kInitialFrameStats{{
         {"Window", 0.0F},
         {"Audio", 0.0F},
@@ -62,6 +72,10 @@ private:
 
     std::unique_ptr<Window> m_window;
     std::unique_ptr<VulkanContext> m_vulkan;
+    std::unique_ptr<RenderFramePipeline> m_renderPipeline;
+    std::unique_ptr<PathTracerRenderer> m_pathTracerRenderer;
+    std::unique_ptr<DebugOverlayRenderer> m_debugOverlay;
+    std::unique_ptr<WorldSceneRenderer> m_worldSceneRenderer;
     std::unique_ptr<AudioSystem> m_audio;
     std::unique_ptr<PhysicsSystem> m_physics;
     std::unique_ptr<ECSSystem> m_ecs;
@@ -69,9 +83,12 @@ private:
     std::unique_ptr<ScriptingSystem> m_scripting;
     std::unique_ptr<TaskSystem> m_tasks;
     std::unique_ptr<World> m_world;
+    RenderStateStore m_renderStateStore;
     std::array<SystemFrameStat, 9> m_systemFrameStats{kInitialFrameStats};
     float m_lastFrameDeltaMilliseconds{0.0F};
     float m_lastFrameCpuMilliseconds{0.0F};
+    std::atomic<bool> m_renderLoopRunning{false};
+    std::thread m_renderThread;
 };
 
 } // namespace Meridian

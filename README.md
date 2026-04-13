@@ -33,6 +33,19 @@ This writes generated files to the local `build/` directory, which is ignored by
 
 This document outlines the core data structures and acceleration strategies for implementing a high-performance path tracer within a procedural, infinite, and simulation-heavy environment.
 
+### Voxel Data Design References
+
+- Runevision, "Fast and Gorgeous Erosion Filter": heightfield generation reference for large-scale terrain shape.
+- John Lin, "The Perfect Voxel Engine": data-oriented reference for keeping a common raw voxel volume, converting to task-specific formats, and avoiding one-format-fits-all voxel architecture.
+
+### Rendering Architecture Rules
+
+- Keep the rendering core/engine backend separate from frontend or game-level graphics responsibilities.
+- Treat Vulkan/device/swapchain/frame execution as core renderer concerns.
+- Treat scene presentation, debug UI, ImGui windows, and other game-facing visuals as frontend features layered on top of the backend.
+- Prefer a modular, idiomatic frame pipeline that composes multiple rendering features rather than growing a single monolithic renderer class.
+- New rendering work should extend the pipeline through focused feature modules before adding responsibilities to the core backend.
+
 ### 1. High-Level Architecture: Two-Level Acceleration
 
 To handle dynamic entities (NPCs, players) alongside a dynamic world, we utilize a **Two-Level Acceleration Structure (TLAS/BLAS)**.
@@ -43,15 +56,21 @@ To handle dynamic entities (NPCs, players) alongside a dynamic world, we utilize
 
 ### 2. Terrain Data: Sparse Voxel Octree (SVO)
 
-Traditional meshes are unsuitable for infinite, editable terrain. We use an **SVO** to represent the world. The world heightmap is procedurally generated in chunks using the methods outlined in this blog post: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
+Traditional meshes are unsuitable for infinite, editable terrain. Meridian treats the world as an infinite 3D grid of cubic chunks, where each chunk is an $N^3$ voxel volume and $N$ is a power of two. The default is $N = 32$. Terrain generation can still start from a heightfield, but chunks themselves are volumetric and not height-bounded objects.
+
+The current terrain bootstrap uses a heightfield as source data, following Runevision's erosion work: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
+
+The broader chunk-data pipeline follows John Lin's argument that voxel engines should preserve a common raw format and convert into specialized structures as needed rather than forcing all systems onto one representation: https://voxely.net/blog/the-perfect-voxel-engine/.
 
 - **Efficiency:** O(\log n) traversal using a **Digital Differential Analyzer (DDA)** algorithm.
-- **Editability:** Real-time "digging" or "building" only requires updating local leaf nodes and propagating values upward.
+- **Chunk Model:** Chunk storage is cubic voxel data first; the per-chunk SVO is a derived acceleration structure for traversal.
+- **Editability:** Real-time "digging" or "building" only requires updating local chunk voxels and propagating changes into derived structures.
 - **LOD:** The tree depth inherently provides Levels of Detail; distant rays can stop at higher-level nodes to save cycles.
+- **Format Conversion:** Different systems are free to consume different derived voxel formats when needed, instead of baking gameplay, rendering, persistence, and simulation into one monolithic storage layout.
 
 ### 3. Global Management: Spatial Hash Grid
 
-For an infinite world, we manage memory through a **Spatial Hash Grid** that stores active chunks.
+For an infinite world, we manage memory through a **Spatial Hash Grid** that stores active chunks in all directions.
 
 - **Key:** Chunk Coordinates (e.g., x, y, z hashed to a uint64).
 - **Value:** Pointer to a local SVO/BLAS.

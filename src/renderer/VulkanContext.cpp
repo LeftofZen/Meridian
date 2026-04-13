@@ -1,9 +1,9 @@
 #include "renderer/VulkanContext.hpp"
 
-#include "core/Logger.hpp"
+#include "renderer/IRenderFrontend.hpp"
+#include "renderer/ShaderLibrary.hpp"
 
-#include <imgui_impl_sdl3.h>
-#include <imgui_impl_vulkan.h>
+#include "core/Logger.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -15,6 +15,17 @@
 #include <stdexcept>
 
 namespace Meridian {
+
+namespace {
+
+void logVkResult(VkResult result)
+{
+    if (result != VK_SUCCESS) {
+        MRD_ERROR("Vulkan backend error: {}", static_cast<int>(result));
+    }
+}
+
+} // namespace
 
 VulkanContext::VulkanContext(const VulkanContextConfig& config) : m_config(config) {}
 
@@ -48,6 +59,7 @@ bool VulkanContext::init(SDL_Window* window)
     if (!pickPhysicalDevice()) return false;
     if (!createLogicalDevice()) return false;
     volkLoadDevice(m_device);
+    m_shaderLibrary = std::make_unique<ShaderLibrary>(m_device);
 
     if (!createSwapchain(window)) return false;
     if (!createSwapchainImageViews()) return false;
@@ -55,9 +67,11 @@ bool VulkanContext::init(SDL_Window* window)
     if (!createFramebuffers()) return false;
     if (!createCommandPool()) return false;
     if (!createCommandBuffers()) return false;
-    if (!createDescriptorPool()) return false;
     if (!createSyncObjects()) return false;
-    if (!initImGui(window)) return false;
+    if (m_renderFrontend != nullptr && !m_renderFrontend->init(window, *this)) {
+        MRD_ERROR("Render frontend init failed");
+        return false;
+    }
 
     MRD_INFO("Vulkan context ready (graphics queue family {}, compute {})",
         m_graphicsQueueFamily.value(),
@@ -69,7 +83,10 @@ void VulkanContext::shutdown()
 {
     if (m_device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(m_device);
-        shutdownImGui();
+        if (m_renderFrontend != nullptr) {
+            m_renderFrontend->shutdown();
+        }
+        m_shaderLibrary.reset();
         destroyRenderResources();
         destroySwapchain();
         vkDestroyDevice(m_device, nullptr);
@@ -91,25 +108,47 @@ void VulkanContext::shutdown()
     m_windowHandle = nullptr;
 }
 
+void VulkanContext::setRenderFrontend(IRenderFrontend* renderFrontend) noexcept
+{
+    m_renderFrontend = renderFrontend;
+}
+
+void VulkanContext::setVSyncEnabled(bool enabled)
+{
+    if (m_vsyncEnabled == enabled) {
+        return;
+    }
+
+    m_vsyncEnabled = enabled;
+    requestPresentationRebuild();
+}
+
+const char* VulkanContext::getPresentModeName() const noexcept
+{
+    return presentModeName();
+}
+
 void VulkanContext::update(float /*deltaTimeSeconds*/)
+{
+    render();
+}
+
+void VulkanContext::render()
 {
     if (m_device == VK_NULL_HANDLE) {
         return;
     }
 
+    if (m_presentationRebuildRequested) {
+        if (!recreatePresentationResources()) {
+            MRD_WARN("Renderer presentation rebuild failed");
+            return;
+        }
+    }
+
     if (!renderFrame()) {
         MRD_WARN("Renderer frame skipped");
     }
-}
-
-void VulkanContext::setFrameStats(
-    std::span<const SystemFrameStat> frameStats,
-    float frameDeltaMilliseconds,
-    float frameCpuMilliseconds)
-{
-    m_frameStats.assign(frameStats.begin(), frameStats.end());
-    m_frameDeltaMilliseconds = frameDeltaMilliseconds;
-    m_frameCpuMilliseconds = frameCpuMilliseconds;
 }
 
 bool VulkanContext::createInstance()
@@ -322,7 +361,7 @@ bool VulkanContext::createSwapchain(SDL_Window* window)
 {
     const auto support = querySwapchainSupport(m_physicalDevice);
     const auto surfaceFormat = chooseSwapSurfaceFormat(support.formats);
-    const auto presentMode = chooseSwapPresentMode(support.presentModes);
+    const auto presentMode = chooseSwapPresentMode(support.presentModes, m_vsyncEnabled);
     const auto extent = chooseSwapExtent(support.capabilities, window);
 
     uint32_t imageCount = support.capabilities.minImageCount + 1;
@@ -372,9 +411,13 @@ bool VulkanContext::createSwapchain(SDL_Window* window)
     m_swapchainImageFormat = surfaceFormat.format;
     m_swapchainExtent = extent;
     m_minImageCount = support.capabilities.minImageCount;
+    m_presentMode = presentMode;
 
-    MRD_INFO("VkSwapchainKHR created ({} images, {}x{})",
-        imgCount, extent.width, extent.height);
+    MRD_INFO("VkSwapchainKHR created ({} images, {}x{}, present mode {})",
+        imgCount,
+        extent.width,
+        extent.height,
+        presentModeName());
     return true;
 }
 
@@ -519,6 +562,7 @@ bool VulkanContext::createSyncObjects()
     m_imageAvailableSemaphores.resize(frameCount);
     m_renderFinishedSemaphores.resize(frameCount);
     m_inFlightFences.resize(frameCount);
+    m_imagesInFlight.assign(m_swapchainImages.size(), VK_NULL_HANDLE);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -547,69 +591,9 @@ bool VulkanContext::createSyncObjects()
     return true;
 }
 
-bool VulkanContext::createDescriptorPool()
-{
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 32;
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = poolSize.descriptorCount;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-
-    if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_imguiDescriptorPool) != VK_SUCCESS) {
-        MRD_ERROR("vkCreateDescriptorPool failed for ImGui");
-        return false;
-    }
-
-    return true;
-}
-
-bool VulkanContext::initImGui(SDL_Window* window)
-{
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-
-    if (!ImGui_ImplSDL3_InitForVulkan(window)) {
-        MRD_ERROR("ImGui SDL3 backend init failed");
-        return false;
-    }
-
-    ImGui_ImplVulkan_InitInfo initInfo{};
-    initInfo.ApiVersion = VK_API_VERSION_1_3;
-    initInfo.Instance = m_instance;
-    initInfo.PhysicalDevice = m_physicalDevice;
-    initInfo.Device = m_device;
-    initInfo.QueueFamily = m_graphicsQueueFamily.value();
-    initInfo.Queue = m_graphicsQueue;
-    initInfo.DescriptorPool = m_imguiDescriptorPool;
-    initInfo.MinImageCount = m_minImageCount;
-    initInfo.ImageCount = static_cast<uint32_t>(m_swapchainImages.size());
-    initInfo.Allocator = nullptr;
-    initInfo.PipelineInfoMain.RenderPass = m_renderPass;
-    initInfo.PipelineInfoMain.Subpass = 0;
-    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    initInfo.CheckVkResultFn = checkVkResult;
-    initInfo.MinAllocationSize = 1024 * 1024;
-
-    if (!ImGui_ImplVulkan_Init(&initInfo)) {
-        MRD_ERROR("ImGui Vulkan backend init failed");
-        ImGui_ImplSDL3_Shutdown();
-        ImGui::DestroyContext();
-        return false;
-    }
-
-    m_imguiInitialised = true;
-    return true;
-}
-
 bool VulkanContext::renderFrame()
 {
-    if (!m_imguiInitialised || m_swapchainImages.empty()) {
+    if (m_swapchainImages.empty()) {
         return false;
     }
 
@@ -626,20 +610,25 @@ bool VulkanContext::renderFrame()
         &imageIndex);
 
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_SUBOPTIMAL_KHR) {
+        requestPresentationRebuild();
         return false;
     }
     if (acquireResult != VK_SUCCESS) {
-        checkVkResult(acquireResult);
+        logVkResult(acquireResult);
         return false;
     }
 
+    if (m_imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        vkWaitForFences(m_device, 1, &m_imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+    }
+
+    m_imagesInFlight[imageIndex] = m_inFlightFences[frameIndex];
+
     vkResetFences(m_device, 1, &m_inFlightFences[frameIndex]);
 
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-    buildFrameStatsWindow();
-    ImGui::Render();
+    if (m_renderFrontend != nullptr) {
+        m_renderFrontend->beginFrame();
+    }
 
     VkCommandBuffer commandBuffer = m_commandBuffers[imageIndex];
     vkResetCommandBuffer(commandBuffer, 0);
@@ -656,7 +645,7 @@ bool VulkanContext::renderFrame()
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[frameIndex];
+    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[imageIndex];
 
     if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[frameIndex]) != VK_SUCCESS) {
         MRD_ERROR("vkQueueSubmit failed");
@@ -666,19 +655,60 @@ bool VulkanContext::renderFrame()
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[frameIndex];
+    presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[imageIndex];
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &m_swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
     const VkResult presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
-    if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR) {
-        checkVkResult(presentResult);
+    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+        requestPresentationRebuild();
+        return false;
+    }
+    if (presentResult != VK_SUCCESS) {
+        logVkResult(presentResult);
         return false;
     }
 
     m_currentFrame = (frameIndex + 1) % m_inFlightFences.size();
     return true;
+}
+
+bool VulkanContext::recreatePresentationResources()
+{
+    if (m_device == VK_NULL_HANDLE || m_windowHandle == nullptr) {
+        return false;
+    }
+
+    vkDeviceWaitIdle(m_device);
+
+    if (m_renderFrontend != nullptr) {
+        m_renderFrontend->shutdown();
+    }
+    destroyRenderResources();
+    destroySwapchain();
+
+    if (!createSwapchain(m_windowHandle)) return false;
+    if (!createSwapchainImageViews()) return false;
+    if (!createRenderPass()) return false;
+    if (!createFramebuffers()) return false;
+    if (!createCommandPool()) return false;
+    if (!createCommandBuffers()) return false;
+    if (!createSyncObjects()) return false;
+    if (m_renderFrontend != nullptr && !m_renderFrontend->init(m_windowHandle, *this)) {
+        MRD_ERROR("Render frontend reinit failed");
+        return false;
+    }
+
+    m_currentFrame = 0;
+    m_presentationRebuildRequested = false;
+    m_imagesInFlight.assign(m_swapchainImages.size(), VK_NULL_HANDLE);
+    return true;
+}
+
+void VulkanContext::requestPresentationRebuild()
+{
+    m_presentationRebuildRequested = true;
 }
 
 bool VulkanContext::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -691,7 +721,10 @@ bool VulkanContext::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
         return false;
     }
 
-    const std::array<float, 4> clearColor{0.08F, 0.09F, 0.11F, 1.0F};
+    std::array<float, 4> clearColor{0.08F, 0.09F, 0.11F, 1.0F};
+    if (m_renderFrontend != nullptr) {
+        clearColor = m_renderFrontend->getFrameConfig().clearColor;
+    }
     VkClearValue clearValue{};
     std::copy(clearColor.begin(), clearColor.end(), clearValue.color.float32);
 
@@ -705,7 +738,9 @@ bool VulkanContext::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
     renderPassInfo.pClearValues = &clearValue;
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+    if (m_renderFrontend != nullptr) {
+        m_renderFrontend->recordFrame(commandBuffer);
+    }
     vkCmdEndRenderPass(commandBuffer);
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
@@ -737,11 +772,6 @@ void VulkanContext::destroyRenderResources()
         vkDestroyRenderPass(m_device, m_renderPass, nullptr);
         m_renderPass = VK_NULL_HANDLE;
     }
-
-    if (m_imguiDescriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_device, m_imguiDescriptorPool, nullptr);
-        m_imguiDescriptorPool = VK_NULL_HANDLE;
-    }
 }
 
 void VulkanContext::destroySyncObjects()
@@ -766,58 +796,7 @@ void VulkanContext::destroySyncObjects()
         }
     }
     m_inFlightFences.clear();
-}
-
-void VulkanContext::shutdownImGui()
-{
-    if (!m_imguiInitialised) {
-        return;
-    }
-
-    ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-    m_imguiInitialised = false;
-}
-
-void VulkanContext::buildFrameStatsWindow()
-{
-    ImGui::SetNextWindowSize(ImVec2(420.0F, 0.0F), ImGuiCond_FirstUseEver);
-    ImGui::Begin("System Frame Times");
-    ImGui::Text(
-        "Frame delta: %.3f ms (%.1f FPS)",
-        m_frameDeltaMilliseconds,
-        m_frameDeltaMilliseconds > 0.0F ? 1000.0F / m_frameDeltaMilliseconds : 0.0F);
-    ImGui::Text("CPU frame: %.3f ms", m_frameCpuMilliseconds);
-    ImGui::Separator();
-
-    if (ImGui::BeginTable(
-            "system-frame-times",
-            2,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("System");
-        ImGui::TableSetupColumn("Update (ms)");
-        ImGui::TableHeadersRow();
-
-        for (const SystemFrameStat& frameStat : m_frameStats) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(frameStat.name.data());
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%.3f", frameStat.updateTimeMilliseconds);
-        }
-
-        ImGui::EndTable();
-    }
-
-    ImGui::End();
-}
-
-void VulkanContext::checkVkResult(VkResult result)
-{
-    if (result != VK_SUCCESS) {
-        MRD_ERROR("Vulkan backend error: {}", static_cast<int>(result));
-    }
+    m_imagesInFlight.clear();
 }
 
 void VulkanContext::destroySwapchain()
@@ -831,6 +810,22 @@ void VulkanContext::destroySwapchain()
     if (m_swapchain != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
         m_swapchain = VK_NULL_HANDLE;
+    }
+}
+
+const char* VulkanContext::presentModeName() const noexcept
+{
+    switch (m_presentMode) {
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:
+        return "Immediate";
+    case VK_PRESENT_MODE_MAILBOX_KHR:
+        return "Mailbox";
+    case VK_PRESENT_MODE_FIFO_KHR:
+        return "FIFO";
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+        return "FIFO Relaxed";
+    default:
+        return "Other";
     }
 }
 
@@ -937,11 +932,22 @@ VkSurfaceFormatKHR VulkanContext::chooseSwapSurfaceFormat(
 }
 
 VkPresentModeKHR VulkanContext::chooseSwapPresentMode(
-    const std::vector<VkPresentModeKHR>& modes)
+    const std::vector<VkPresentModeKHR>& modes,
+    bool vsyncEnabled)
 {
-    for (const auto& mode : modes) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+    if (vsyncEnabled) {
+        return VK_PRESENT_MODE_FIFO_KHR;
     }
+
+    if (!vsyncEnabled) {
+        for (const auto& mode : modes) {
+            if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) return mode;
+        }
+        for (const auto& mode : modes) {
+            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+        }
+    }
+
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 

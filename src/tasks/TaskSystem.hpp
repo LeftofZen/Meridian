@@ -4,8 +4,10 @@
 
 #include <taskflow/taskflow.hpp>
 
+#include <future>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 
 namespace Meridian {
 
@@ -52,6 +54,14 @@ public:
     {
         ensureInitialised();
         m_executor->run(flow).wait();
+    }
+
+    template <typename F>
+    [[nodiscard]] auto async(F&& task)
+        -> std::future<std::invoke_result_t<std::decay_t<F>>>
+    {
+        ensureInitialised();
+        return m_executor->async(std::forward<F>(task));
     }
 
     [[nodiscard]] bool isInitialised() const noexcept { return m_initialized; }

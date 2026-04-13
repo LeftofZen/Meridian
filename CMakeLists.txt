@@ -42,7 +42,41 @@ find_package(sol2 CONFIG REQUIRED)
 find_package(RecastNavigation CONFIG REQUIRED)
 find_package(Taskflow CONFIG REQUIRED)
 
+find_program(GLSLANG_VALIDATOR NAMES glslangValidator HINTS
+    ENV VULKAN_SDK
+    PATH_SUFFIXES Bin)
+
+if (NOT GLSLANG_VALIDATOR)
+    message(FATAL_ERROR "glslangValidator was not found. Install the Vulkan SDK or add glslangValidator to PATH.")
+endif()
+
 add_executable(Meridian)
+
+set(MERIDIAN_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+file(TO_CMAKE_PATH "${MERIDIAN_SHADER_OUTPUT_DIR}" MERIDIAN_SHADER_OUTPUT_DIR_CMAKE)
+
+set(MERIDIAN_SHADER_SOURCES
+    shaders/fullscreen_triangle.vert
+    shaders/basic_pathtracer.frag
+)
+
+set(MERIDIAN_SHADER_OUTPUTS)
+foreach(MERIDIAN_SHADER_SOURCE IN LISTS MERIDIAN_SHADER_SOURCES)
+    get_filename_component(MERIDIAN_SHADER_NAME "${MERIDIAN_SHADER_SOURCE}" NAME)
+    set(MERIDIAN_SHADER_OUTPUT "${MERIDIAN_SHADER_OUTPUT_DIR}/${MERIDIAN_SHADER_NAME}.spv")
+
+    add_custom_command(
+        OUTPUT "${MERIDIAN_SHADER_OUTPUT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MERIDIAN_SHADER_OUTPUT_DIR}"
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.3 -o "${MERIDIAN_SHADER_OUTPUT}" "${CMAKE_CURRENT_SOURCE_DIR}/${MERIDIAN_SHADER_SOURCE}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${MERIDIAN_SHADER_SOURCE}"
+        VERBATIM)
+
+    list(APPEND MERIDIAN_SHADER_OUTPUTS "${MERIDIAN_SHADER_OUTPUT}")
+endforeach()
+
+add_custom_target(MeridianShaders ALL DEPENDS ${MERIDIAN_SHADER_OUTPUTS})
+add_dependencies(Meridian MeridianShaders)
 
 set(MERIDIAN_VCPKG_ROOT "")
 if (DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/buildtrees/imgui/src")
@@ -70,11 +104,20 @@ target_sources(Meridian PRIVATE
     src/main.cpp
     src/core/Engine.cpp
     src/window/Window.cpp
+    src/renderer/DebugOverlayRenderer.cpp
+    src/renderer/PathTracerRenderer.cpp
+    src/renderer/RenderFramePipeline.cpp
+    src/renderer/ShaderLibrary.cpp
     src/renderer/VulkanContext.cpp
+    src/renderer/WorldSceneRenderer.cpp
     src/audio/AudioSystem.cpp
     src/physics/PhysicsSystem.cpp
     src/networking/NetworkSystem.cpp
     src/scripting/ScriptingSystem.cpp
+    src/world/WorldChunkManager.cpp
+    src/world/SparseVoxelOctree.cpp
+    src/world/WorldChunkStorage.cpp
+    src/world/WorldSpatialHashGrid.cpp
     src/world/World.cpp
     ${MERIDIAN_IMGUI_SOURCES}
 )
@@ -120,6 +163,7 @@ endif()
 
 target_compile_definitions(Meridian PRIVATE
     IMGUI_IMPL_VULKAN_USE_VOLK=1
+    MERIDIAN_SHADER_OUTPUT_DIR="${MERIDIAN_SHADER_OUTPUT_DIR_CMAKE}"
     SOL_ALL_SAFETIES_ON=1
     WIN32_LEAN_AND_MEAN
     NOMINMAX

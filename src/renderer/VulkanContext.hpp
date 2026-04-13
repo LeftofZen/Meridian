@@ -1,15 +1,13 @@
 #pragma once
 
-#include "core/SystemFrameStats.hpp"
 #include "core/ISystem.hpp"
 
 #include <volk.h>
 
-#include <imgui.h>
-
 #include <SDL3/SDL_vulkan.h>
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -17,6 +15,9 @@
 #include <string>
 
 namespace Meridian {
+
+class IRenderFrontend;
+class ShaderLibrary;
 
 struct VulkanContextConfig {
     std::string appName{"Meridian"};
@@ -36,10 +37,8 @@ public:
     [[nodiscard]] bool init(SDL_Window* windowHandle);
     void shutdown();
     void update(float deltaTimeSeconds) override;
-    void setFrameStats(
-        std::span<const SystemFrameStat> frameStats,
-        float frameDeltaMilliseconds,
-        float frameCpuMilliseconds);
+    void render();
+    void setRenderFrontend(IRenderFrontend* renderFrontend) noexcept;
 
     [[nodiscard]] VkInstance getInstance() const noexcept { return m_instance; }
     [[nodiscard]] VkPhysicalDevice getPhysicalDevice() const noexcept { return m_physicalDevice; }
@@ -51,15 +50,22 @@ public:
     [[nodiscard]] VkQueue getPresentQueue() const noexcept { return m_presentQueue; }
     [[nodiscard]] VkFormat getSwapchainFormat() const noexcept { return m_swapchainImageFormat; }
     [[nodiscard]] VkExtent2D getSwapchainExtent() const noexcept { return m_swapchainExtent; }
+    [[nodiscard]] VkRenderPass getRenderPass() const noexcept { return m_renderPass; }
+    [[nodiscard]] uint32_t getMinImageCount() const noexcept { return m_minImageCount; }
+    [[nodiscard]] std::size_t getSwapchainImageCount() const noexcept { return m_swapchainImages.size(); }
     [[nodiscard]] const std::vector<VkImageView>& getSwapchainImageViews() const noexcept
     {
         return m_swapchainImageViews;
     }
     [[nodiscard]] bool hasComputeSupport() const noexcept { return m_computeQueueFamily.has_value(); }
+    [[nodiscard]] ShaderLibrary& getShaderLibrary() noexcept { return *m_shaderLibrary; }
     [[nodiscard]] uint32_t getGraphicsQueueFamily() const noexcept
     {
         return m_graphicsQueueFamily.value();
     }
+    [[nodiscard]] bool isVSyncEnabled() const noexcept { return m_vsyncEnabled; }
+    void setVSyncEnabled(bool enabled);
+    [[nodiscard]] const char* getPresentModeName() const noexcept;
 
 private:
     [[nodiscard]] bool createInstance();
@@ -73,19 +79,16 @@ private:
     [[nodiscard]] bool createFramebuffers();
     [[nodiscard]] bool createCommandPool();
     [[nodiscard]] bool createCommandBuffers();
-    [[nodiscard]] bool createDescriptorPool();
     [[nodiscard]] bool createSyncObjects();
-    [[nodiscard]] bool initImGui(SDL_Window* window);
     [[nodiscard]] bool renderFrame();
     [[nodiscard]] bool recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
     void destroySwapchain();
     void destroyRenderResources();
     void destroySyncObjects();
-    void shutdownImGui();
-    void buildFrameStatsWindow();
-
-    static void checkVkResult(VkResult result);
+    [[nodiscard]] bool recreatePresentationResources();
+    void requestPresentationRebuild();
+    [[nodiscard]] const char* presentModeName() const noexcept;
 
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsFamily;
@@ -112,7 +115,8 @@ private:
     [[nodiscard]] static VkSurfaceFormatKHR chooseSwapSurfaceFormat(
         const std::vector<VkSurfaceFormatKHR>& formats);
     [[nodiscard]] static VkPresentModeKHR chooseSwapPresentMode(
-        const std::vector<VkPresentModeKHR>& modes);
+        const std::vector<VkPresentModeKHR>& modes,
+        bool vsyncEnabled);
     [[nodiscard]] static VkExtent2D chooseSwapExtent(
         const VkSurfaceCapabilitiesKHR& caps,
         SDL_Window* window);
@@ -141,25 +145,26 @@ private:
     std::vector<VkSemaphore> m_imageAvailableSemaphores;
     std::vector<VkSemaphore> m_renderFinishedSemaphores;
     std::vector<VkFence> m_inFlightFences;
+    std::vector<VkFence> m_imagesInFlight;
 
     VkQueue m_graphicsQueue{VK_NULL_HANDLE};
     VkQueue m_computeQueue{VK_NULL_HANDLE};
     VkQueue m_presentQueue{VK_NULL_HANDLE};
     VkRenderPass m_renderPass{VK_NULL_HANDLE};
     VkCommandPool m_commandPool{VK_NULL_HANDLE};
-    VkDescriptorPool m_imguiDescriptorPool{VK_NULL_HANDLE};
 
     std::optional<uint32_t> m_graphicsQueueFamily;
     std::optional<uint32_t> m_computeQueueFamily;
     std::optional<uint32_t> m_presentQueueFamily;
     bool m_validationEnabled{false};
     SDL_Window* m_windowHandle{nullptr};
-    std::vector<SystemFrameStat> m_frameStats;
-    float m_frameDeltaMilliseconds{0.0F};
-    float m_frameCpuMilliseconds{0.0F};
     std::size_t m_currentFrame{0};
-    bool m_imguiInitialised{false};
+    bool m_vsyncEnabled{true};
+    bool m_presentationRebuildRequested{false};
     uint32_t m_minImageCount{2};
+    VkPresentModeKHR m_presentMode{VK_PRESENT_MODE_FIFO_KHR};
+    IRenderFrontend* m_renderFrontend{nullptr};
+    std::unique_ptr<ShaderLibrary> m_shaderLibrary;
 
     static constexpr std::array<const char*, 1> k_validationLayers{
         "VK_LAYER_KHRONOS_validation"};
