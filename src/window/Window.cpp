@@ -2,6 +2,9 @@
 
 #include "core/Logger.hpp"
 
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+
 #include <SDL3/SDL.h>
 
 namespace Meridian {
@@ -45,10 +48,23 @@ void Window::shutdown()
     }
 }
 
+void Window::update(float /*deltaTimeSeconds*/)
+{
+    if (!m_window) {
+        return;
+    }
+
+    processEvents();
+}
+
 void Window::processEvents()
 {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (ImGui::GetCurrentContext() != nullptr) {
+            ImGui_ImplSDL3_ProcessEvent(&event);
+        }
+
         switch (event.type) {
             case SDL_EVENT_QUIT:
                 m_shouldClose = true;

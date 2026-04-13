@@ -103,14 +103,14 @@ void PhysicsSystem::shutdown()
     m_initialised = false;
 }
 
-void PhysicsSystem::update(float deltaTimeSeconds, int collisionSteps)
+void PhysicsSystem::update(float deltaTimeSeconds)
 {
     if (!m_initialised || !m_physicsSystem) {
         return;
     }
 
     m_physicsSystem->Update(
-        deltaTimeSeconds, collisionSteps, m_tempAllocator.get(), m_jobSystem.get());
+        deltaTimeSeconds, kCollisionSteps, m_tempAllocator.get(), m_jobSystem.get());
 }
 
 } // namespace Meridian

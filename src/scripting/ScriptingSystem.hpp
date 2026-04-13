@@ -1,12 +1,14 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <sol/sol.hpp>
 
 #include <string>
 
 namespace Meridian {
 
-class ScriptingSystem {
+class ScriptingSystem final : public ISystem {
 public:
     ScriptingSystem() = default;
     ~ScriptingSystem();
@@ -18,6 +20,7 @@ public:
 
     [[nodiscard]] bool init();
     void shutdown();
+    void update(float deltaTimeSeconds) override;
 
     [[nodiscard]] sol::state& getLuaState() noexcept { return m_lua; }
     [[nodiscard]] const sol::state& getLuaState() const noexcept { return m_lua; }

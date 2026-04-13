@@ -1,11 +1,17 @@
 #pragma once
 
+#include "core/SystemFrameStats.hpp"
+#include "core/ISystem.hpp"
+
 #include <volk.h>
+
+#include <imgui.h>
 
 #include <SDL3/SDL_vulkan.h>
 
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <string>
@@ -17,7 +23,7 @@ struct VulkanContextConfig {
     bool enableValidation{true};
 };
 
-class VulkanContext {
+class VulkanContext final : public ISystem {
 public:
     explicit VulkanContext(const VulkanContextConfig& config);
     ~VulkanContext();
@@ -29,6 +35,11 @@ public:
 
     [[nodiscard]] bool init(SDL_Window* windowHandle);
     void shutdown();
+    void update(float deltaTimeSeconds) override;
+    void setFrameStats(
+        std::span<const SystemFrameStat> frameStats,
+        float frameDeltaMilliseconds,
+        float frameCpuMilliseconds);
 
     [[nodiscard]] VkInstance getInstance() const noexcept { return m_instance; }
     [[nodiscard]] VkPhysicalDevice getPhysicalDevice() const noexcept { return m_physicalDevice; }
@@ -58,8 +69,23 @@ private:
     [[nodiscard]] bool createLogicalDevice();
     [[nodiscard]] bool createSwapchain(SDL_Window* window);
     [[nodiscard]] bool createSwapchainImageViews();
+    [[nodiscard]] bool createRenderPass();
+    [[nodiscard]] bool createFramebuffers();
+    [[nodiscard]] bool createCommandPool();
+    [[nodiscard]] bool createCommandBuffers();
+    [[nodiscard]] bool createDescriptorPool();
+    [[nodiscard]] bool createSyncObjects();
+    [[nodiscard]] bool initImGui(SDL_Window* window);
+    [[nodiscard]] bool renderFrame();
+    [[nodiscard]] bool recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
     void destroySwapchain();
+    void destroyRenderResources();
+    void destroySyncObjects();
+    void shutdownImGui();
+    void buildFrameStatsWindow();
+
+    static void checkVkResult(VkResult result);
 
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsFamily;
@@ -110,15 +136,30 @@ private:
     VkExtent2D m_swapchainExtent{};
     std::vector<VkImage> m_swapchainImages;
     std::vector<VkImageView> m_swapchainImageViews;
+    std::vector<VkFramebuffer> m_swapchainFramebuffers;
+    std::vector<VkCommandBuffer> m_commandBuffers;
+    std::vector<VkSemaphore> m_imageAvailableSemaphores;
+    std::vector<VkSemaphore> m_renderFinishedSemaphores;
+    std::vector<VkFence> m_inFlightFences;
 
     VkQueue m_graphicsQueue{VK_NULL_HANDLE};
     VkQueue m_computeQueue{VK_NULL_HANDLE};
     VkQueue m_presentQueue{VK_NULL_HANDLE};
+    VkRenderPass m_renderPass{VK_NULL_HANDLE};
+    VkCommandPool m_commandPool{VK_NULL_HANDLE};
+    VkDescriptorPool m_imguiDescriptorPool{VK_NULL_HANDLE};
 
     std::optional<uint32_t> m_graphicsQueueFamily;
     std::optional<uint32_t> m_computeQueueFamily;
     std::optional<uint32_t> m_presentQueueFamily;
     bool m_validationEnabled{false};
+    SDL_Window* m_windowHandle{nullptr};
+    std::vector<SystemFrameStat> m_frameStats;
+    float m_frameDeltaMilliseconds{0.0F};
+    float m_frameCpuMilliseconds{0.0F};
+    std::size_t m_currentFrame{0};
+    bool m_imguiInitialised{false};
+    uint32_t m_minImageCount{2};
 
     static constexpr std::array<const char*, 1> k_validationLayers{
         "VK_LAYER_KHRONOS_validation"};

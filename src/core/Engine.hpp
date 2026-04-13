@@ -2,6 +2,7 @@
 
 #include "audio/AudioSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/SystemFrameStats.hpp"
 #include "ecs/ECSSystem.hpp"
 #include "networking/NetworkSystem.hpp"
 #include "physics/PhysicsSystem.hpp"
@@ -11,6 +12,7 @@
 #include "window/Window.hpp"
 #include "world/World.hpp"
 
+#include <array>
 #include <memory>
 
 namespace Meridian {
@@ -46,6 +48,18 @@ public:
     [[nodiscard]] World& getWorld() noexcept { return *m_world; }
 
 private:
+    static constexpr std::array<SystemFrameStat, 9> kInitialFrameStats{{
+        {"Window", 0.0F},
+        {"Audio", 0.0F},
+        {"Physics", 0.0F},
+        {"ECS", 0.0F},
+        {"Networking", 0.0F},
+        {"Scripting", 0.0F},
+        {"Tasks", 0.0F},
+        {"World", 0.0F},
+        {"Renderer", 0.0F},
+    }};
+
     std::unique_ptr<Window> m_window;
     std::unique_ptr<VulkanContext> m_vulkan;
     std::unique_ptr<AudioSystem> m_audio;
@@ -55,6 +69,9 @@ private:
     std::unique_ptr<ScriptingSystem> m_scripting;
     std::unique_ptr<TaskSystem> m_tasks;
     std::unique_ptr<World> m_world;
+    std::array<SystemFrameStat, 9> m_systemFrameStats{kInitialFrameStats};
+    float m_lastFrameDeltaMilliseconds{0.0F};
+    float m_lastFrameCpuMilliseconds{0.0F};
 };
 
 } // namespace Meridian

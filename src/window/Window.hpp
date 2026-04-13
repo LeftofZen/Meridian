@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <SDL3/SDL.h>
 
 #include <string>
@@ -12,7 +14,7 @@ struct WindowConfig {
     int height{720};
 };
 
-class Window {
+class Window final : public ISystem {
 public:
     explicit Window(const WindowConfig& config);
     ~Window();
@@ -30,6 +32,7 @@ public:
     [[nodiscard]] int getWidth() const noexcept { return m_config.width; }
     [[nodiscard]] int getHeight() const noexcept { return m_config.height; }
 
+    void update(float deltaTimeSeconds) override;
     void processEvents();
 
 private:

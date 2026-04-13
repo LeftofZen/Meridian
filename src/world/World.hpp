@@ -1,8 +1,10 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 namespace Meridian {
 
-class World {
+class World final : public ISystem {
 public:
     World() = default;
     ~World();
@@ -14,6 +16,7 @@ public:
 
     [[nodiscard]] bool init();
     void shutdown();
+    void update(float deltaTimeSeconds) override;
 
 private:
     bool m_initialised = false;

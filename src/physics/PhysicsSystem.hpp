@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
@@ -72,7 +74,7 @@ struct PhysicsConfig {
     uint32_t tempAllocatorSizeMB{10};
 };
 
-class PhysicsSystem {
+class PhysicsSystem final : public ISystem {
 public:
     explicit PhysicsSystem(const PhysicsConfig& config = {});
     ~PhysicsSystem();
@@ -85,7 +87,7 @@ public:
     [[nodiscard]] bool init();
     void shutdown();
 
-    void update(float deltaTimeSeconds, int collisionSteps = 1);
+    void update(float deltaTimeSeconds) override;
     [[nodiscard]] JPH::PhysicsSystem& getSystem() noexcept { return *m_physicsSystem; }
     [[nodiscard]] const JPH::PhysicsSystem& getSystem() const noexcept
     {
@@ -107,6 +109,8 @@ private:
     std::unique_ptr<JPH::PhysicsSystem> m_physicsSystem;
     bool m_initialised{false};
     bool m_ownsJoltFactory{false};
+
+    static constexpr int kCollisionSteps{1};
 };
 
 } // namespace Meridian

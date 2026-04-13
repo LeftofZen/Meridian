@@ -24,4 +24,11 @@ void World::shutdown()
     }
 }
 
+void World::update(float /*deltaTimeSeconds*/)
+{
+    if (!m_initialised) {
+        return;
+    }
+}
+
 } // namespace Meridian

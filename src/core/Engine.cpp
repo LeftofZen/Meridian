@@ -2,6 +2,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <array>
+#include <cstddef>
+
 namespace Meridian {
 
 Engine::~Engine()
@@ -96,8 +99,51 @@ void Engine::run()
 {
     MRD_INFO("Entering main loop (press ESC or close window to exit)");
 
+    const float performanceFrequency = static_cast<float>(SDL_GetPerformanceFrequency());
+    Uint64 previousCounter = SDL_GetPerformanceCounter();
+
     while (!m_window->shouldClose()) {
-        m_window->processEvents();
+        const Uint64 currentCounter = SDL_GetPerformanceCounter();
+        const float deltaTimeSeconds =
+            static_cast<float>(currentCounter - previousCounter) / performanceFrequency;
+        previousCounter = currentCounter;
+
+        const std::array<ISystem*, 9> systems{
+            m_window.get(),
+            m_audio.get(),
+            m_physics.get(),
+            m_ecs.get(),
+            m_network.get(),
+            m_scripting.get(),
+            m_tasks.get(),
+            m_world.get(),
+            m_vulkan.get()};
+
+        m_vulkan->setFrameStats(
+            m_systemFrameStats,
+            m_lastFrameDeltaMilliseconds,
+            m_lastFrameCpuMilliseconds);
+
+        const Uint64 cpuFrameStartCounter = SDL_GetPerformanceCounter();
+
+        for (std::size_t index = 0; index < systems.size(); ++index) {
+            ISystem* system = systems[index];
+            if (system != nullptr) {
+                const Uint64 updateStartCounter = SDL_GetPerformanceCounter();
+                system->update(deltaTimeSeconds);
+                const Uint64 updateEndCounter = SDL_GetPerformanceCounter();
+                m_systemFrameStats[index].updateTimeMilliseconds =
+                    static_cast<float>(updateEndCounter - updateStartCounter) * 1000.0F /
+                    performanceFrequency;
+            }
+        }
+
+        const Uint64 cpuFrameEndCounter = SDL_GetPerformanceCounter();
+        m_lastFrameDeltaMilliseconds = deltaTimeSeconds * 1000.0F;
+        m_lastFrameCpuMilliseconds =
+            static_cast<float>(cpuFrameEndCounter - cpuFrameStartCounter) * 1000.0F /
+            performanceFrequency;
+
         if (!m_window->shouldClose()) {
             SDL_Delay(1);
         }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <taskflow/taskflow.hpp>
 
 #include <memory>
@@ -7,10 +9,10 @@
 
 namespace Meridian {
 
-class TaskSystem {
+class TaskSystem final : public ISystem {
 public:
     TaskSystem() = default;
-    ~TaskSystem() { shutdown(); }
+    ~TaskSystem() override { shutdown(); }
 
     TaskSystem(const TaskSystem&) = delete;
     TaskSystem& operator=(const TaskSystem&) = delete;
@@ -32,6 +34,8 @@ public:
         }
         m_initialized = false;
     }
+
+    void update(float /*deltaTimeSeconds*/) override {}
 
     [[nodiscard]] tf::Executor& getExecutor()
     {

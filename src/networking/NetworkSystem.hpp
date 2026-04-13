@@ -1,11 +1,13 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <steam/isteamnetworkingutils.h>
 #include <steam/steamnetworkingsockets.h>
 
 namespace Meridian {
 
-class NetworkSystem {
+class NetworkSystem final : public ISystem {
 public:
     NetworkSystem() = default;
     ~NetworkSystem();
@@ -17,6 +19,7 @@ public:
 
     [[nodiscard]] bool init();
     void shutdown();
+    void update(float deltaTimeSeconds) override;
 
     [[nodiscard]] ISteamNetworkingSockets* getSockets() const noexcept { return m_sockets; }
     [[nodiscard]] ISteamNetworkingUtils* getUtils() const noexcept { return m_utils; }

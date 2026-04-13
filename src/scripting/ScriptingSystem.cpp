@@ -34,6 +34,13 @@ void ScriptingSystem::shutdown()
     // sol::state destructor handles cleanup
 }
 
+void ScriptingSystem::update(float /*deltaTimeSeconds*/)
+{
+    if (!m_initialized) {
+        return;
+    }
+}
+
 bool ScriptingSystem::execute(const std::string& script)
 {
     const auto result = m_lua.safe_script(script, sol::script_pass_on_error);
