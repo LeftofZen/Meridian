@@ -24,6 +24,10 @@ enum class VoxelMaterialId : std::uint8_t {
     Air = 0,
     Grass = 1,
     Stone = 2,
+    Dirt = 3,
+    Sand = 4,
+    Snow = 5,
+    Forest = 6,
 };
 
 inline constexpr std::uint32_t kWorldChunkResolution = 32;

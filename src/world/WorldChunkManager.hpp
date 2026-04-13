@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/CameraState.hpp"
 #include "world/WorldData.hpp"
 #include "world/TerrainHeightmapGenerator.hpp"
 #include "world/WorldRenderData.hpp"
@@ -36,6 +37,7 @@ public:
     [[nodiscard]] std::uint64_t renderRevision() const noexcept { return m_renderRevision; }
     [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
+    void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
     void rebuildActiveTerrain();
 
 private:
@@ -61,11 +63,13 @@ private:
         std::future<GeneratedChunk> future;
     };
 
-    void bootstrapChunkRequests();
-    void warmHeightmapTiles();
+    void queueChunksAroundFocus();
     void requestChunk(ChunkCoord coord);
     void dispatchChunkJobs();
     void collectCompletedJobs();
+    void pruneChunksOutsideRetention();
+    [[nodiscard]] bool shouldKeepChunk(ChunkCoord coord) const noexcept;
+    [[nodiscard]] bool shouldRequestChunk(ChunkCoord coord) const noexcept;
 
     [[nodiscard]] static GeneratedChunk generateChunk(
         ChunkCoord coord,
@@ -77,13 +81,20 @@ private:
         const TerrainHeightmapSettings& heightmapSettings);
     [[nodiscard]] static std::vector<VoxelSample> generateDefaultChunkVoxels(ChunkCoord coord);
 
-    static constexpr int kBootstrapRadius{1};
     static constexpr std::size_t kMaxConcurrentJobs{2};
+    static constexpr int kStreamRadiusXZ{2};
+    static constexpr int kRetentionRadiusXZ{3};
+    static constexpr int kStreamChunksBelowFocus{3};
+    static constexpr int kStreamChunksAboveFocus{1};
+    static constexpr int kRetentionChunksBelowFocus{4};
+    static constexpr int kRetentionChunksAboveFocus{2};
+    static constexpr float kStreamingLookAheadDistance{96.0F};
 
     TaskSystem& m_tasks;
     TerrainHeightmapGenerator* m_heightmapGenerator{nullptr};
     bool m_initialised{false};
-    bool m_bootstrapRequested{false};
+    bool m_hasStreamingCamera{false};
+    ChunkCoord m_streamingFocusChunk{};
     std::deque<ChunkCoord> m_pendingRequests;
     std::vector<ChunkJob> m_inFlightJobs;
     std::unordered_map<ChunkKey, ChunkRecord> m_chunkRecords;

@@ -100,6 +100,13 @@ std::vector<WorldChunkRenderData> World::buildRenderData() const
     return m_chunkManager ? m_chunkManager->buildRenderData() : std::vector<WorldChunkRenderData>{};
 }
 
+void World::setStreamingCamera(const CameraRenderState& cameraState) noexcept
+{
+    if (m_chunkManager) {
+        m_chunkManager->setStreamingCamera(cameraState);
+    }
+}
+
 TerrainHeightmapSettings World::terrainSettings() const
 {
     if (!m_heightmapGenerator) {

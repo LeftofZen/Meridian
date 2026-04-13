@@ -10,6 +10,7 @@ namespace Meridian {
 class WorldSpatialHashGrid final {
 public:
     void upsert(WorldChunkStorage chunkStorage);
+    void erase(ChunkKey key) noexcept;
     [[nodiscard]] bool contains(ChunkKey key) const noexcept;
     [[nodiscard]] WorldChunkStorage* find(ChunkKey key) noexcept;
     [[nodiscard]] const WorldChunkStorage* find(ChunkKey key) const noexcept;

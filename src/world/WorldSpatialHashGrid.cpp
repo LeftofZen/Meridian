@@ -8,6 +8,11 @@ void WorldSpatialHashGrid::upsert(WorldChunkStorage chunkStorage)
     m_chunks.insert_or_assign(key, std::move(chunkStorage));
 }
 
+void WorldSpatialHashGrid::erase(ChunkKey key) noexcept
+{
+    m_chunks.erase(key);
+}
+
 bool WorldSpatialHashGrid::contains(ChunkKey key) const noexcept
 {
     return m_chunks.contains(key);

@@ -33,6 +33,10 @@ const float kVerticalFovDegrees = 42.0;
 const uint kMaterialAir = 0u;
 const uint kMaterialGrass = 1u;
 const uint kMaterialStone = 2u;
+const uint kMaterialDirt = 3u;
+const uint kMaterialSand = 4u;
+const uint kMaterialSnow = 5u;
+const uint kMaterialForest = 6u;
 const int kMaxDdaSteps = 1024;
 
 struct Ray {
@@ -103,6 +107,22 @@ vec3 materialAlbedo(uint materialId)
 {
     if (materialId == kMaterialGrass) {
         return vec3(0.26, 0.62, 0.23);
+    }
+
+    if (materialId == kMaterialDirt) {
+        return vec3(0.47, 0.32, 0.19);
+    }
+
+    if (materialId == kMaterialSand) {
+        return vec3(0.78, 0.71, 0.52);
+    }
+
+    if (materialId == kMaterialSnow) {
+        return vec3(0.90, 0.93, 0.96);
+    }
+
+    if (materialId == kMaterialForest) {
+        return vec3(0.16, 0.36, 0.12);
     }
 
     if (materialId == kMaterialStone) {

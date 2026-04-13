@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/ISystem.hpp"
+#include "renderer/CameraState.hpp"
 #include "renderer/VulkanContext.hpp"
 #include "world/WorldChunkManager.hpp"
 #include "world/WorldRenderData.hpp"
@@ -41,6 +42,7 @@ public:
 
     [[nodiscard]] TerrainHeightmapSettings terrainSettings() const;
     void requestTerrainSettings(TerrainHeightmapSettings settings);
+    void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
 
 private:
     void applyPendingTerrainSettings();

@@ -164,6 +164,9 @@ bool Engine::init()
         MRD_CRITICAL("World init failed");
         return false;
     }
+    if (m_freeCameraController) {
+        m_world->setStreamingCamera(m_freeCameraController->cameraState());
+    }
     m_debugOverlay->setTerrainSettingsCallbacks(
         [this]() {
             return m_world ? m_world->terrainSettings() : TerrainHeightmapSettings{};
@@ -213,6 +216,9 @@ void Engine::run()
             if (system != nullptr) {
                 const Uint64 updateStartCounter = SDL_GetPerformanceCounter();
                 system->update(deltaTimeSeconds);
+                if (system == m_freeCameraController.get() && m_world != nullptr) {
+                    m_world->setStreamingCamera(m_freeCameraController->cameraState());
+                }
                 const Uint64 updateEndCounter = SDL_GetPerformanceCounter();
                 m_systemFrameStats[index].updateTimeMilliseconds =
                     static_cast<float>(updateEndCounter - updateStartCounter) * 1000.0F /
