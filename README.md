@@ -4,16 +4,28 @@ A next-gen game engine.
 
 ## Build
 
-Meridian currently supports only Visual Studio 2026 with the MSVC 19.50 toolset.
+Meridian supports two build workflows:
+
+- Visual Studio 2026 with the MSVC 19.50 toolset
+- VS Code with `clang-cl` against the same Windows/MSVC SDK toolchain
 
 Set `VCPKG_ROOT` to your vcpkg checkout before configuring. The VS Code build task also falls back to a sibling checkout at `../vcpkg` if present.
 
-From a Visual Studio 2026 Developer PowerShell:
+For Visual Studio 2026 with MSVC:
 
 ```powershell
 cmake --preset vs2026-debug
 cmake --build --preset vs2026-debug
 ```
+
+For VS Code with Clang:
+
+```powershell
+cmake --preset vscode-clang-debug
+cmake --build --preset vscode-clang-debug
+```
+
+The Clang preset is portable on purpose: it does not hardcode local install paths. In VS Code, use the `Build Meridian (VS Code Clang)` task, or run it from a shell where `clang-cl` and the MSVC/Windows SDK build environment are already available.
 
 This writes generated files to the local `build/` directory, which is ignored by Git.
 
@@ -23,11 +35,11 @@ This document outlines the core data structures and acceleration strategies for 
 
 ### 1. High-Level Architecture: Two-Level Acceleration
 
-To handle dynamic entities (NPCs, players) alongside a static world, we utilize a **Two-Level Acceleration Structure (TLAS/BLAS)**.
+To handle dynamic entities (NPCs, players) alongside a dynamic world, we utilize a **Two-Level Acceleration Structure (TLAS/BLAS)**.
 
 - **Bottom-Level (BLAS):** Contains local geometry (Triangles for NPCs, SVOs for terrain).
 - **Top-Level (TLAS):** Contains instances of BLAS objects with transform matrices.
-  - *Implementation Note:* Update only the TLAS matrices during the simulation loop to avoid expensive geometry rebuilds.
+  - _Implementation Note:_ Update only the TLAS matrices during the simulation loop to avoid expensive geometry rebuilds.
 
 ### 2. Terrain Data: Sparse Voxel Octree (SVO)
 
@@ -57,12 +69,12 @@ For characters and physics-driven objects that deform or move rapidly:
 
 ### 5. Performance Checklist
 
-| Strategy | Purpose |
-| --- | --- |
-| **DDA Stepping** | Fast ray-traversal through voxels. |
-| **Temporal Re-projection** | Smear lighting data across frames to reduce noise (e.g., ASVGF). |
-| **Stochastic Updates** | Prioritize updating acceleration structures for objects closest to the camera. |
-| **Ray Binning** | Group rays by direction to improve GPU cache hits. |
+| Strategy                   | Purpose                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------ |
+| **DDA Stepping**           | Fast ray-traversal through voxels.                                             |
+| **Temporal Re-projection** | Smear lighting data across frames to reduce noise (e.g., ASVGF).               |
+| **Stochastic Updates**     | Prioritize updating acceleration structures for objects closest to the camera. |
+| **Ray Binning**            | Group rays by direction to improve GPU cache hits.                             |
 
 ## Technology Stack Decisions
 
@@ -74,12 +86,12 @@ The following library selections were evaluated against the requirements of a re
 
 **vcpkg package:** `joltphysics`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
+| Candidate        | Verdict         | Notes                                                                                                                           |
+| ---------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | **Jolt Physics** | ✅ **Selected** | Multi-threaded, deterministic, modern C++17/20 API, production-proven (Horizon Forbidden West, Death Stranding 2), MIT licensed |
-| Bullet3 | Considered | Mature and stable but predominantly single-threaded, older API design |
-| PhysX (NVIDIA) | Rejected | Proprietary license, GPU path tightly coupled to CUDA rather than Vulkan |
-| Havok | Rejected | Commercial/enterprise license, unsuitable for open development |
+| Bullet3          | Considered      | Mature and stable but predominantly single-threaded, older API design                                                           |
+| PhysX (NVIDIA)   | Rejected        | Proprietary license, GPU path tightly coupled to CUDA rather than Vulkan                                                        |
+| Havok            | Rejected        | Commercial/enterprise license, unsuitable for open development                                                                  |
 
 **Key reasons:**
 
@@ -94,23 +106,18 @@ The following library selections were evaluated against the requirements of a re
 
 **Selected:** Custom Vulkan Compute Shader implementation (SPH or FLIP method)
 
-**Reference format:** [OpenVDB](https://www.openvdb.org/) / [NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb/tree/master/nanovdb) for sparse volumetric storage
-
-**vcpkg package:** `openvdb` (for data representation only)
-
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **Custom GPU SPH/FLIP** | ✅ **Selected** | Zero-copy with path tracer, native voxel grid coupling, Vulkan-native |
-| OpenVDB | Partial use | Industry standard sparse volumetric format; used for storage and NanoVDB GPU reads, not as a solver |
-| SPlisHSPlasH | Rejected | CPU-primary research library; GPU support requires CUDA, incompatible with Vulkan path |
-| PhysBAM | Rejected | Academic, outdated toolchain, not game-engine-ready |
+| Candidate               | Verdict         | Notes                                                                                  |
+| ----------------------- | --------------- | -------------------------------------------------------------------------------------- |
+| **Custom GPU SPH/FLIP** | ✅ **Selected** | Zero-copy with path tracer, native voxel grid coupling, Vulkan-native                  |
+| SPlisHSPlasH            | Rejected        | CPU-primary research library; GPU support requires CUDA, incompatible with Vulkan path |
+| PhysBAM                 | Rejected        | Academic, outdated toolchain, not game-engine-ready                                    |
 
 **Key reasons:**
 
 - No existing real-time fluid library supports direct Vulkan compute integration
 - GPU SPH runs entirely on the same queue as the path tracer, eliminating CPU↔GPU synchronisation overhead
 - FLIP (Fluid-Implicit-Particle) offers higher visual fidelity for water; SPH for gas/fire
-- OpenVDB/NanoVDB provides the proven data layout for sparse 3-D volumes that flow naturally into the SVO architecture
+- Sparse fluid data stays in Meridian-owned GPU buffers, avoiding an extra volumetric format dependency
 
 ---
 
@@ -120,11 +127,11 @@ The following library selections were evaluated against the requirements of a re
 
 **Optional cache/replay:** [Partio](https://github.com/wdas/partio) (Disney) if offline export is needed
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **Custom GPU Compute** | ✅ **Selected** | Native Vulkan, zero-copy with path tracer, direct voxel density read/write |
-| Partio (Disney) | Optional | Excellent for particle cache I/O (BGEO, PDB formats); not a simulator |
-| Third-party VFX library | Rejected | All mature options (Houdini-side) are CPU-primary or proprietary |
+| Candidate               | Verdict         | Notes                                                                      |
+| ----------------------- | --------------- | -------------------------------------------------------------------------- |
+| **Custom GPU Compute**  | ✅ **Selected** | Native Vulkan, zero-copy with path tracer, direct voxel density read/write |
+| Partio (Disney)         | Optional        | Excellent for particle cache I/O (BGEO, PDB formats); not a simulator      |
+| Third-party VFX library | Rejected        | All mature options (Houdini-side) are CPU-primary or proprietary           |
 
 **Key reasons:**
 
@@ -141,11 +148,11 @@ The following library selections were evaluated against the requirements of a re
 
 **vcpkg package:** `entt`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **EnTT** | ✅ **Selected** | Header-only, C++20, sparse-set storage gives optimal cache locality, 12K+ stars, used in Minecraft Bedrock |
-| Flecs | Considered | Excellent query system and built-in pipelines; slightly heavier and less C++20-idiomatic |
-| EntityX | Rejected | Archived/unmaintained project |
+| Candidate | Verdict         | Notes                                                                                                      |
+| --------- | --------------- | ---------------------------------------------------------------------------------------------------------- |
+| **EnTT**  | ✅ **Selected** | Header-only, C++20, sparse-set storage gives optimal cache locality, 12K+ stars, used in Minecraft Bedrock |
+| Flecs     | Considered      | Excellent query system and built-in pipelines; slightly heavier and less C++20-idiomatic                   |
+| EntityX   | Rejected        | Archived/unmaintained project                                                                              |
 
 **Key reasons:**
 
@@ -162,12 +169,12 @@ The following library selections were evaluated against the requirements of a re
 
 **vcpkg package:** `gamenetworkingsockets`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
+| Candidate                 | Verdict         | Notes                                                                                 |
+| ------------------------- | --------------- | ------------------------------------------------------------------------------------- |
 | **GameNetworkingSockets** | ✅ **Selected** | Production-proven (Steam), reliable UDP, NAT traversal, P2P + relay hybrid, 9K+ stars |
-| yojimbo | Considered | Clean game-focused API, but smaller community and not in vcpkg |
-| ENet | Fallback | Excellent lightweight reliable-UDP; lacks built-in NAT traversal |
-| Asio | Rejected | Raw sockets only; requires a full game-protocol layer on top |
+| yojimbo                   | Considered      | Clean game-focused API, but smaller community and not in vcpkg                        |
+| ENet                      | Fallback        | Excellent lightweight reliable-UDP; lacks built-in NAT traversal                      |
+| Asio                      | Rejected        | Raw sockets only; requires a full game-protocol layer on top                          |
 
 **Key reasons:**
 
@@ -185,11 +192,11 @@ The following library selections were evaluated against the requirements of a re
 
 **vcpkg package:** SDL3 already included; `gainput` available if needed
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **SDL3 built-in** | ✅ **Selected** | Keyboard, mouse, gamepad (including sensors, rumble, hot-plug), touch — all unified under one event loop we already own |
-| gainput | Optional | Cross-platform action-mapping/binding abstraction on top of raw input; vcpkg available; last major release 2018 — limited C++20 support |
-| OIS | Rejected | Primarily OGRE-ecosystem, outdated |
+| Candidate         | Verdict         | Notes                                                                                                                                   |
+| ----------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **SDL3 built-in** | ✅ **Selected** | Keyboard, mouse, gamepad (including sensors, rumble, hot-plug), touch — all unified under one event loop we already own                 |
+| gainput           | Optional        | Cross-platform action-mapping/binding abstraction on top of raw input; vcpkg available; last major release 2018 — limited C++20 support |
+| OIS               | Rejected        | Primarily OGRE-ecosystem, outdated                                                                                                      |
 
 **Key reasons:**
 
@@ -208,13 +215,12 @@ The following library selections were evaluated against the requirements of a re
 
 **vcpkg packages:** `lmdb`, `sqlitecpp` (pulls in `sqlite3` automatically)
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **LMDB** | ✅ **Selected (chunks)** | Memory-mapped, ACID, key = uint64 chunk coordinates, value = zstd-compressed SVO bytes; single-process read/write; near-zero copy on reads |
-| **SQLite3 + SQLiteCpp** | ✅ **Selected (game state)** | Transactional, zero-config embedded SQL; used for player data, inventories, quest state; R-tree extension available for spatial indexing |
-| RocksDB | Rejected | Better for distributed systems; write-amplification overhead undesirable for game chunks |
-| LevelDB | Considered | Precursor to RocksDB; simpler, but lacks LMDB's memory-map advantage for large random reads |
-| OpenVDB `.vdb` files | Partial | Excellent for authored/exported terrain; too heavy for runtime chunk streaming |
+| Candidate               | Verdict                      | Notes                                                                                                                                      |
+| ----------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **LMDB**                | ✅ **Selected (chunks)**     | Memory-mapped, ACID, key = uint64 chunk coordinates, value = zstd-compressed SVO bytes; single-process read/write; near-zero copy on reads |
+| **SQLite3 + SQLiteCpp** | ✅ **Selected (game state)** | Transactional, zero-config embedded SQL; used for player data, inventories, quest state; R-tree extension available for spatial indexing   |
+| RocksDB                 | Rejected                     | Better for distributed systems; write-amplification overhead undesirable for game chunks                                                   |
+| LevelDB                 | Considered                   | Precursor to RocksDB; simpler, but lacks LMDB's memory-map advantage for large random reads                                                |
 
 **Persistence strategy:**
 
@@ -235,11 +241,11 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **No additional library required beyond SQLite support already used for persistence**
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
+| Candidate                   | Verdict                      | Notes                                                                                                                   |
+| --------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **SQLite R-tree extension** | ✅ **Selected (persistent)** | Uses SQLite's R-tree virtual table support (`USING rtree`) to handle bounding-box overlap queries on saved entity state |
-| **EnTT views/groups** | ✅ **Selected (in-memory)** | Sparse-set iteration with component filters serves as the live ECS query layer |
-| Boost.Geometry | Rejected | Overkill; adds heavy Boost dependency for a feature covered by SQLite and EnTT |
+| **EnTT views/groups**       | ✅ **Selected (in-memory)**  | Sparse-set iteration with component filters serves as the live ECS query layer                                          |
+| Boost.Geometry              | Rejected                     | Overkill; adds heavy Boost dependency for a feature covered by SQLite and EnTT                                          |
 
 **Key reasons:**
 
@@ -256,13 +262,13 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **Audio I/O backend:** SDL3 audio output (already present) or miniaudio
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **Steam Audio** | ✅ **Selected** | HRTF binaural rendering, physics-based occlusion/reverb via ray casting, path tracing integration possible, Apache-2.0, from Valve (same ecosystem as GNS) |
-| SDL3 built-in audio | Partial | Raw PCM playback only — no 3D positioning or reverb |
-| SDL3-mixer | Considered | Multi-channel mixing, format decoding — can sit on top of Steam Audio for decoding |
-| OpenAL-Soft | Considered | 3D positional audio with EFX reverb; less integrated with a ray-cast world |
-| miniaudio | Fallback | Single-header audio I/O; excellent as the device output layer beneath Steam Audio |
+| Candidate           | Verdict         | Notes                                                                                                                                                      |
+| ------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Steam Audio**     | ✅ **Selected** | HRTF binaural rendering, physics-based occlusion/reverb via ray casting, path tracing integration possible, Apache-2.0, from Valve (same ecosystem as GNS) |
+| SDL3 built-in audio | Partial         | Raw PCM playback only — no 3D positioning or reverb                                                                                                        |
+| SDL3-mixer          | Considered      | Multi-channel mixing, format decoding — can sit on top of Steam Audio for decoding                                                                         |
+| OpenAL-Soft         | Considered      | 3D positional audio with EFX reverb; less integrated with a ray-cast world                                                                                 |
+| miniaudio           | Fallback        | Single-header audio I/O; excellent as the device output layer beneath Steam Audio                                                                          |
 
 **Key reasons:**
 
@@ -279,11 +285,11 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `glm`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **GLM** | ✅ **Selected** | Header-only, mirrors GLSL types (`vec3`, `mat4`, `quat`), Vulkan-column-major convention built-in, MIT licensed, 10K+ stars |
-| Eigen | Considered | More powerful for linear algebra/physics solvers, but heavier; Jolt ships its own math types anyway |
-| Custom | Rejected | No justification given GLM's quality and vcpkg availability |
+| Candidate | Verdict         | Notes                                                                                                                       |
+| --------- | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **GLM**   | ✅ **Selected** | Header-only, mirrors GLSL types (`vec3`, `mat4`, `quat`), Vulkan-column-major convention built-in, MIT licensed, 10K+ stars |
+| Eigen     | Considered      | More powerful for linear algebra/physics solvers, but heavier; Jolt ships its own math types anyway                         |
+| Custom    | Rejected        | No justification given GLM's quality and vcpkg availability                                                                 |
 
 **Key reasons:**
 
@@ -299,11 +305,11 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `spdlog`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **spdlog** | ✅ **Selected** | Header-only mode or pre-compiled, async sinks, structured log levels, pattern formatting, MIT licensed, industry standard |
-| std::print / printf | Rejected | No log levels, no file rotation, no async |
-| Boost.Log | Rejected | Heavy dependency for logging alone |
+| Candidate           | Verdict         | Notes                                                                                                                     |
+| ------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **spdlog**          | ✅ **Selected** | Header-only mode or pre-compiled, async sinks, structured log levels, pattern formatting, MIT licensed, industry standard |
+| std::print / printf | Rejected        | No log levels, no file rotation, no async                                                                                 |
+| Boost.Log           | Rejected        | Heavy dependency for logging alone                                                                                        |
 
 **Key reasons:**
 
@@ -319,12 +325,12 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `flatbuffers`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **FlatBuffers** | ✅ **Selected** | Zero-copy deserialisation, memory-mapped access, schema-driven, cross-language (useful for tooling), Apache-2.0; already a transitive dependency of Steam Audio |
-| cereal | Considered | Header-only, simple API, but requires full deserialisation into C++ types before use |
-| MessagePack | Considered | Compact binary format; no zero-copy |
-| Protocol Buffers | Rejected | Already a GNS transitive dependency but overkill as primary serialisation |
+| Candidate        | Verdict         | Notes                                                                                                                                                           |
+| ---------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FlatBuffers**  | ✅ **Selected** | Zero-copy deserialisation, memory-mapped access, schema-driven, cross-language (useful for tooling), Apache-2.0; already a transitive dependency of Steam Audio |
+| cereal           | Considered      | Header-only, simple API, but requires full deserialisation into C++ types before use                                                                            |
+| MessagePack      | Considered      | Compact binary format; no zero-copy                                                                                                                             |
+| Protocol Buffers | Rejected        | Already a GNS transitive dependency but overkill as primary serialisation                                                                                       |
 
 **Key reasons:**
 
@@ -340,17 +346,17 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `zstd`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **zstd** | ✅ **Selected** | Best ratio/speed tradeoff for structured binary data; dictionary training for voxel chunk patterns; BSD-3 licensed |
-| lz4 | Considered | Fastest decompression (~5 GB/s); best for network packets where bandwidth < CPU |
-| zlib/deflate | Rejected | Older algorithm; worse ratio and speed than zstd |
-| snappy | Rejected | No dictionary support; worse ratio than zstd |
+| Candidate    | Verdict         | Notes                                                                                                              |
+| ------------ | --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **zstd**     | ✅ **Selected** | Best ratio/speed tradeoff for structured binary data; dictionary training for voxel chunk patterns; BSD-3 licensed |
+| lz4          | Considered      | Fastest decompression (~5 GB/s); best for network packets where bandwidth < CPU                                    |
+| zlib/deflate | Rejected        | Older algorithm; worse ratio and speed than zstd                                                                   |
+| snappy       | Rejected        | No dictionary support; worse ratio than zstd                                                                       |
 
 **Key reasons:**
 
 - Voxel chunks have repeated structure (homogeneous regions) that benefits enormously from **zstd dictionary compression** (train a dictionary on a sample of chunks → 2–4× better ratio)
-- Used internally by OpenVDB — reusing the same dependency avoids version conflicts
+- Fits Meridian chunk serialisation directly without adding a second runtime compression path
 - Level 1 zstd decompresses at ~2 GB/s; sufficient for real-time chunk streaming
 
 ---
@@ -361,11 +367,11 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `imgui` with features `vulkan-binding` and `sdl3-binding`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
+| Candidate      | Verdict         | Notes                                                                                                                            |
+| -------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | **Dear ImGui** | ✅ **Selected** | Immediate-mode, zero-retained-state, Vulkan + SDL3 backends both in vcpkg, MIT licensed, industry standard for in-engine tooling |
-| Qt | Rejected | Heavyweight, separate event loop incompatible with SDL3 |
-| Custom UI | Rejected | High cost for low differentiation |
+| Qt             | Rejected        | Heavyweight, separate event loop incompatible with SDL3                                                                          |
+| Custom UI      | Rejected        | High cost for low differentiation                                                                                                |
 
 **Key reasons:**
 
@@ -381,12 +387,12 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg packages:** `lua`, `sol2`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
+| Candidate      | Verdict         | Notes                                                                                                                             |
+| -------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | **Lua + sol2** | ✅ **Selected** | Tiny VM (~250 KB), coroutines native, MIT license, sol2 gives zero-overhead C++ ↔ Lua binding, industry-standard for game modding |
-| AngelScript | Considered | Statically typed, C-like syntax; good for gameplay programmers but heavier than Lua |
-| ChaiScript | Rejected | Header-only but slower than Lua; limited ecosystem |
-| Python | Rejected | Too heavy for an embedded game scripting VM |
+| AngelScript    | Considered      | Statically typed, C-like syntax; good for gameplay programmers but heavier than Lua                                               |
+| ChaiScript     | Rejected        | Header-only but slower than Lua; limited ecosystem                                                                                |
+| Python         | Rejected        | Too heavy for an embedded game scripting VM                                                                                       |
 
 **Key reasons:**
 
@@ -402,11 +408,11 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `recastnavigation`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **Recast & Detour** | ✅ **Selected** | Industry standard navmesh (used in Unity, Unreal, Godot), Zlib licensed; Recast builds the mesh, Detour queries it |
-| Custom A* on voxel grid | Considered | Simpler but does not handle 3-D environments, crowds, or off-mesh connections |
-| PathEngine | Rejected | Commercial license |
+| Candidate                | Verdict         | Notes                                                                                                              |
+| ------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Recast & Detour**      | ✅ **Selected** | Industry standard navmesh (used in Unity, Unreal, Godot), Zlib licensed; Recast builds the mesh, Detour queries it |
+| Custom A\* on voxel grid | Considered      | Simpler but does not handle 3-D environments, crowds, or off-mesh connections                                      |
+| PathEngine               | Rejected        | Commercial license                                                                                                 |
 
 **Key reasons:**
 
@@ -422,12 +428,12 @@ Chunk value = zstd_compress(serialise_svo(chunk))        // byte blob
 
 **vcpkg package:** `taskflow`
 
-| Candidate | Verdict | Notes |
-| --- | --- | --- |
-| **Taskflow** | ✅ **Selected** | C++17 task graph with work-stealing, async tasks, CUDA/Vulkan compute integration hooks, MIT licensed |
-| Intel TBB | Considered | Mature, high-performance; heavier dependency, Apache-2.0 |
-| Jolt's job system | Partial | Excellent for physics work but private API; cannot schedule non-physics tasks |
-| std::async / thread pool | Rejected | No dependency graph; deadlock-prone for complex pipelines |
+| Candidate                | Verdict         | Notes                                                                                                 |
+| ------------------------ | --------------- | ----------------------------------------------------------------------------------------------------- |
+| **Taskflow**             | ✅ **Selected** | C++17 task graph with work-stealing, async tasks, CUDA/Vulkan compute integration hooks, MIT licensed |
+| Intel TBB                | Considered      | Mature, high-performance; heavier dependency, Apache-2.0                                              |
+| Jolt's job system        | Partial         | Excellent for physics work but private API; cannot schedule non-physics tasks                         |
+| std::async / thread pool | Rejected        | No dependency graph; deadlock-prone for complex pipelines                                             |
 
 **Key reasons:**
 

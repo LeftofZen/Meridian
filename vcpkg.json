@@ -12,7 +12,6 @@
     "joltphysics",
     "entt",
     "gamenetworkingsockets",
-    "openvdb",
     "lmdb",
     "sqlitecpp",
     "steam-audio",

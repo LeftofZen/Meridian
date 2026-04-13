@@ -1,27 +1,35 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "Build Meridian (VS 2026)",
-            "type": "shell",
-            "command": "if not defined VCPKG_ROOT if exist \"${workspaceFolder}\\..\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake\" set \"VCPKG_ROOT=${workspaceFolder}\\..\\vcpkg\" && if not defined VCPKG_ROOT (echo VCPKG_ROOT is not set and no sibling vcpkg checkout was found. && exit /b 1) && if not exist \"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\" (echo vswhere.exe not found. && exit /b 1) && for /f \"usebackq delims=\" %i in (`\"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call \"%i\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul && cmake --preset vs2026-debug && cmake --build --preset vs2026-debug",
-            "options": {
-                "cwd": "${workspaceFolder}",
-                "shell": {
-                    "executable": "C:\\Windows\\System32\\cmd.exe",
-                    "args": [
-                        "/d",
-                        "/c"
-                    ]
-                }
-            },
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "problemMatcher": [
-                "$msCompile"
-            ]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Meridian (VS 2026)",
+      "type": "shell",
+      "command": "if not defined VCPKG_ROOT if exist \"${workspaceFolder}\\..\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake\" set \"VCPKG_ROOT=${workspaceFolder}\\..\\vcpkg\" && if not defined VCPKG_ROOT (echo VCPKG_ROOT is not set and no sibling vcpkg checkout was found. && exit /b 1) && if not exist \"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\" (echo vswhere.exe not found. && exit /b 1) && for /f \"usebackq delims=\" %i in (`\"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call \"%i\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul && cmake --preset vs2026-debug && cmake --build --preset vs2026-debug",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "C:\\Windows\\System32\\cmd.exe",
+          "args": ["/d", "/c"]
         }
-    ]
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$msCompile"]
+    },
+    {
+      "label": "Build Meridian (VS Code Clang)",
+      "type": "shell",
+      "command": "if not defined VCPKG_ROOT if exist \"${workspaceFolder}\\..\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake\" set \"VCPKG_ROOT=${workspaceFolder}\\..\\vcpkg\" && if not defined VCPKG_ROOT (echo VCPKG_ROOT is not set and no sibling vcpkg checkout was found. && exit /b 1) && if not exist \"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\" (echo vswhere.exe not found. && exit /b 1) && for /f \"usebackq delims=\" %i in (`\"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call \"%i\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul && if exist \"%ProgramFiles%\\LLVM\\bin\\clang-cl.exe\" set \"PATH=%ProgramFiles%\\LLVM\\bin;%PATH%\" && cmake --preset vscode-clang-debug && cmake --build --preset vscode-clang-debug",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "C:\\Windows\\System32\\cmd.exe",
+          "args": ["/d", "/c"]
+        }
+      },
+      "problemMatcher": ["$msCompile"]
+    }
+  ]
 }
