@@ -86,7 +86,7 @@ private:
 
     [[nodiscard]] static GeneratedChunk generateChunk(
         ChunkCoord coord,
-        TerrainHeightmapTile heightmapTile,
+        std::shared_ptr<const TerrainHeightmapTile> heightmapTile,
         TerrainHeightmapSettings heightmapSettings);
     [[nodiscard]] static std::vector<VoxelSample> generateHeightmapChunkVoxels(
         ChunkCoord coord,
@@ -114,7 +114,7 @@ private:
     std::deque<ChunkCoord> m_pendingRequests;
     std::vector<ChunkJob> m_inFlightJobs;
     std::unordered_map<ChunkKey, ChunkRecord> m_chunkRecords;
-    std::unordered_map<ChunkKey, TerrainHeightmapTile> m_heightmapTiles;
+    std::unordered_map<ChunkKey, std::shared_ptr<const TerrainHeightmapTile>> m_heightmapTiles;
     std::unordered_map<ChunkKey, WorldChunkRenderData> m_renderChunkData;
     std::unordered_set<ChunkKey> m_solidOccluderKeys;
     WorldSpatialHashGrid m_residentChunks;

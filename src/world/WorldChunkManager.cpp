@@ -687,7 +687,7 @@ void WorldChunkManager::dispatchChunkJobs()
 
         chunkIt->second.status = ChunkStatus::Generating;
 
-        TerrainHeightmapTile heightmapTile;
+        std::shared_ptr<const TerrainHeightmapTile> heightmapTile;
         if (m_heightmapGenerator != nullptr) {
             ZoneScopedN("WorldChunkManager::prepareHeightmapTile");
             const ChunkKey tileKey = heightmapTileKey(coord);
@@ -695,7 +695,8 @@ void WorldChunkManager::dispatchChunkJobs()
             if (tileIt == m_heightmapTiles.end()) {
                 tileIt = m_heightmapTiles.emplace(
                     tileKey,
-                    m_heightmapGenerator->generateTile(coord)).first;
+                    std::make_shared<TerrainHeightmapTile>(
+                        m_heightmapGenerator->generateTile(coord))).first;
             }
 
             heightmapTile = tileIt->second;
@@ -771,13 +772,13 @@ void WorldChunkManager::collectCompletedJobs()
 
 WorldChunkManager::GeneratedChunk WorldChunkManager::generateChunk(
     ChunkCoord coord,
-    TerrainHeightmapTile heightmapTile,
+    std::shared_ptr<const TerrainHeightmapTile> heightmapTile,
     TerrainHeightmapSettings heightmapSettings)
 {
     ZoneScopedN("WorldChunkManager::generateChunk");
     const ChunkKey key = makeChunkKey(coord);
-    std::vector<VoxelSample> voxels = !heightmapTile.grayscale.empty()
-        ? generateHeightmapChunkVoxels(coord, heightmapTile, heightmapSettings)
+    std::vector<VoxelSample> voxels = (heightmapTile && !heightmapTile->grayscale.empty())
+        ? generateHeightmapChunkVoxels(coord, *heightmapTile, heightmapSettings)
         : generateDefaultChunkVoxels(coord);
     SparseVoxelOctree octree;
     {

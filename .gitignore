@@ -57,3 +57,6 @@ compile_commands.json
 
 # debug information files
 *.dwo
+
+# ImGui user-local layout file (generated at runtime per developer)
+imgui.ini

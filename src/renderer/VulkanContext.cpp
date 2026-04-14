@@ -556,6 +556,9 @@ bool VulkanContext::createSwapchain(SDL_Window* window)
 
     m_swapchainImageFormat = surfaceFormat.format;
     m_swapchainExtent = extent;
+    m_swapchainExtentAtomic.store(
+        (static_cast<std::uint64_t>(extent.width) << 32) | extent.height,
+        std::memory_order_release);
     m_minImageCount = support.capabilities.minImageCount;
     m_presentMode = presentMode;
 

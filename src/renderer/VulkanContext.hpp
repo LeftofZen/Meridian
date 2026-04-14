@@ -4,11 +4,12 @@
 
 #include <volk.h>
 
-#include <tracy/tracy/TracyVulkan.hpp>
+#include <tracy/TracyVulkan.hpp>
 
 #include <SDL3/SDL_vulkan.h>
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <memory>
 #include <optional>
@@ -53,7 +54,13 @@ public:
     [[nodiscard]] VkQueue getComputeQueue() const noexcept { return m_computeQueue; }
     [[nodiscard]] VkQueue getPresentQueue() const noexcept { return m_presentQueue; }
     [[nodiscard]] VkFormat getSwapchainFormat() const noexcept { return m_swapchainImageFormat; }
-    [[nodiscard]] VkExtent2D getSwapchainExtent() const noexcept { return m_swapchainExtent; }
+    [[nodiscard]] VkExtent2D getSwapchainExtent() const noexcept
+    {
+        const std::uint64_t packed = m_swapchainExtentAtomic.load(std::memory_order_acquire);
+        return VkExtent2D{
+            static_cast<uint32_t>(packed >> 32),
+            static_cast<uint32_t>(packed & 0xFFFFFFFFU)};
+    }
     [[nodiscard]] VkRenderPass getRenderPass() const noexcept { return m_renderPass; }
     [[nodiscard]] uint32_t getMinImageCount() const noexcept { return m_minImageCount; }
     [[nodiscard]] std::size_t getSwapchainImageCount() const noexcept { return m_swapchainImages.size(); }
@@ -176,6 +183,7 @@ private:
 
     VkFormat m_swapchainImageFormat{VK_FORMAT_UNDEFINED};
     VkExtent2D m_swapchainExtent{};
+    std::atomic<std::uint64_t> m_swapchainExtentAtomic{0};
     std::vector<VkImage> m_swapchainImages;
     std::vector<VkImageView> m_swapchainImageViews;
     std::vector<VkFramebuffer> m_swapchainFramebuffers;

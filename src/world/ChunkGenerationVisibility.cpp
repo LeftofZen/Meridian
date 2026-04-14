@@ -97,7 +97,7 @@ bool ChunkGenerationVisibility::isChunkVisible(
     const Vec3 up = normalize(cross(right, forward));
     const float nearClipDistance = std::max(cameraState.projection.nearClipDistance, kMinNearClipDistance);
     const float verticalFovDegrees = std::max(cameraState.projection.verticalFovDegrees, kMinVerticalFovDegrees);
-    const float aspectRatio = std::max(cameraState.projection.aspectRatio, 1.0F);
+    const float aspectRatio = std::max(cameraState.projection.aspectRatio, std::numeric_limits<float>::epsilon());
     const float tanHalfVerticalFov = std::tan(verticalFovDegrees * 0.5F * kPi / 180.0F);
     const float tanHalfHorizontalFov = tanHalfVerticalFov * aspectRatio;
 

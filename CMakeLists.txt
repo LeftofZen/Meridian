@@ -87,28 +87,6 @@ endforeach()
 add_custom_target(MeridianShaders ALL DEPENDS ${MERIDIAN_SHADER_OUTPUTS})
 add_dependencies(Meridian MeridianShaders)
 
-set(MERIDIAN_VCPKG_ROOT "")
-if (DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/buildtrees/imgui/src")
-    set(MERIDIAN_VCPKG_ROOT "$ENV{VCPKG_ROOT}")
-elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg/buildtrees/imgui/src")
-    set(MERIDIAN_VCPKG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg")
-endif()
-
-file(GLOB IMGUI_SOURCE_ROOTS "${MERIDIAN_VCPKG_ROOT}/buildtrees/imgui/src/v*.clean")
-list(SORT IMGUI_SOURCE_ROOTS COMPARE NATURAL ORDER DESCENDING)
-list(LENGTH IMGUI_SOURCE_ROOTS IMGUI_SOURCE_ROOT_COUNT)
-if (IMGUI_SOURCE_ROOT_COUNT GREATER 0)
-    list(GET IMGUI_SOURCE_ROOTS 0 IMGUI_SOURCE_ROOT)
-    set(MERIDIAN_IMGUI_SOURCES
-        "${IMGUI_SOURCE_ROOT}/imgui.cpp"
-        "${IMGUI_SOURCE_ROOT}/imgui_draw.cpp"
-        "${IMGUI_SOURCE_ROOT}/imgui_tables.cpp"
-        "${IMGUI_SOURCE_ROOT}/imgui_widgets.cpp"
-        "${IMGUI_SOURCE_ROOT}/backends/imgui_impl_sdl3.cpp"
-        "${IMGUI_SOURCE_ROOT}/backends/imgui_impl_vulkan.cpp"
-    )
-endif()
-
 target_sources(Meridian PRIVATE
     src/main.cpp
     src/core/Engine.cpp
@@ -133,19 +111,11 @@ target_sources(Meridian PRIVATE
     src/world/WorldChunkStorage.cpp
     src/world/WorldSpatialHashGrid.cpp
     src/world/World.cpp
-    ${MERIDIAN_IMGUI_SOURCES}
 )
 
 target_include_directories(Meridian PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-
-if (IMGUI_SOURCE_ROOT_COUNT GREATER 0)
-    target_include_directories(Meridian PRIVATE
-        "${IMGUI_SOURCE_ROOT}"
-        "${IMGUI_SOURCE_ROOT}/backends"
-    )
-endif()
 
 target_link_libraries(Meridian PRIVATE
     SDL3::SDL3
@@ -166,11 +136,8 @@ target_link_libraries(Meridian PRIVATE
     RecastNavigation::Recast
     RecastNavigation::Detour
     Taskflow::Taskflow
+    imgui::imgui
 )
-
-if (IMGUI_SOURCE_ROOT_COUNT EQUAL 0)
-    target_link_libraries(Meridian PRIVATE imgui::imgui)
-endif()
 
 if (WIN32)
     add_custom_command(TARGET Meridian POST_BUILD

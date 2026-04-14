@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -177,11 +178,12 @@ template <typename T>
     return compressedBuffer;
 }
 
-[[nodiscard]] std::optional<std::vector<std::uint8_t>> decompressChunkBlob(MDB_val value)
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> decompressChunkBlob(
+    std::span<const std::uint8_t> compressedBytes)
 {
     ZoneScopedN("WorldChunkDatabase::decompressChunkBlob");
-    const auto* compressedData = static_cast<const std::uint8_t*>(value.mv_data);
-    const std::size_t compressedSize = value.mv_size;
+    const auto* compressedData = compressedBytes.data();
+    const std::size_t compressedSize = compressedBytes.size();
     const unsigned long long uncompressedSize =
         ZSTD_getFrameContentSize(compressedData, compressedSize);
     if (uncompressedSize == ZSTD_CONTENTSIZE_ERROR ||
@@ -294,37 +296,47 @@ std::optional<WorldChunkStorage> WorldChunkDatabase::loadChunk(
     std::uint64_t terrainSettingsSignature) const
 {
     ZoneScopedN("WorldChunkDatabase::loadChunk");
-    std::scoped_lock lock(m_mutex);
-    if (!isInitialised()) {
-        return std::nullopt;
-    }
 
-    MDB_txn* transaction = nullptr;
-    const int beginResult = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &transaction);
-    if (beginResult != MDB_SUCCESS) {
-        MRD_WARN("Failed to begin LMDB read transaction for chunk load: {}", mdb_strerror(beginResult));
-        return std::nullopt;
-    }
+    // Copy the raw compressed bytes while holding the lock and LMDB transaction open.
+    std::vector<std::uint8_t> rawBytes;
+    {
+        std::scoped_lock lock(m_mutex);
+        if (!isInitialised()) {
+            return std::nullopt;
+        }
 
-    MDB_val databaseKey{
-        .mv_size = sizeof(key),
-        .mv_data = &key,
-    };
-    MDB_val databaseValue{};
-    const int getResult = mdb_get(transaction, m_chunkDatabaseHandle, &databaseKey, &databaseValue);
-    if (getResult == MDB_NOTFOUND) {
+        MDB_txn* transaction = nullptr;
+        const int beginResult = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &transaction);
+        if (beginResult != MDB_SUCCESS) {
+            MRD_WARN("Failed to begin LMDB read transaction for chunk load: {}", mdb_strerror(beginResult));
+            return std::nullopt;
+        }
+
+        MDB_val databaseKey{
+            .mv_size = sizeof(key),
+            .mv_data = &key,
+        };
+        MDB_val databaseValue{};
+        const int getResult = mdb_get(transaction, m_chunkDatabaseHandle, &databaseKey, &databaseValue);
+        if (getResult == MDB_NOTFOUND) {
+            mdb_txn_abort(transaction);
+            return std::nullopt;
+        }
+
+        if (getResult != MDB_SUCCESS) {
+            mdb_txn_abort(transaction);
+            MRD_WARN("Failed to load chunk {} from LMDB: {}", key, mdb_strerror(getResult));
+            return std::nullopt;
+        }
+
+        rawBytes.assign(
+            static_cast<const std::uint8_t*>(databaseValue.mv_data),
+            static_cast<const std::uint8_t*>(databaseValue.mv_data) + databaseValue.mv_size);
         mdb_txn_abort(transaction);
-        return std::nullopt;
     }
 
-    if (getResult != MDB_SUCCESS) {
-        mdb_txn_abort(transaction);
-        MRD_WARN("Failed to load chunk {} from LMDB: {}", key, mdb_strerror(getResult));
-        return std::nullopt;
-    }
-
-    const std::optional<std::vector<std::uint8_t>> decompressedBlob = decompressChunkBlob(databaseValue);
-    mdb_txn_abort(transaction);
+    // Decompress and deserialise outside the mutex to avoid blocking other threads.
+    const std::optional<std::vector<std::uint8_t>> decompressedBlob = decompressChunkBlob(rawBytes);
     if (!decompressedBlob.has_value()) {
         MRD_WARN("Failed to decompress cached world chunk {}", key);
         return std::nullopt;
@@ -338,17 +350,19 @@ bool WorldChunkDatabase::storeChunk(
     std::uint64_t terrainSettingsSignature)
 {
     ZoneScopedN("WorldChunkDatabase::storeChunk");
-    std::scoped_lock lock(m_mutex);
-    if (!isInitialised()) {
-        return false;
-    }
 
+    // Serialise and compress outside the mutex — these can be expensive.
     const std::vector<std::uint8_t> serialisedChunk =
         serialiseChunk(chunkStorage, terrainSettingsSignature);
     const std::optional<std::vector<std::uint8_t>> compressedChunk =
         compressChunkBlob(serialisedChunk);
     if (!compressedChunk.has_value()) {
         MRD_WARN("Failed to compress world chunk {} for persistence", chunkStorage.key());
+        return false;
+    }
+
+    std::scoped_lock lock(m_mutex);
+    if (!isInitialised()) {
         return false;
     }
 
