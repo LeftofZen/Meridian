@@ -1,6 +1,7 @@
 #include "renderer/WorldSceneRenderer.hpp"
 
 #include "renderer/VulkanContext.hpp"
+#include "world/SparseVoxelOctree.hpp"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -8,13 +9,19 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
 
 namespace Meridian {
 
 namespace {
 
-constexpr float kWireframeVerticalFovDegrees = 42.0F;
-constexpr float kWireframeNearPlane = 0.05F;
+constexpr float kMinProjectionAspectRatio = 0.01F;
+constexpr float kMinProjectionVerticalFovDegrees = 1.0F;
+constexpr float kMinProjectionNearPlane = 0.01F;
+constexpr float kWireframeTerrainProbeOffset = 0.15F;
+constexpr std::uint32_t kPackedNodeWordCount = 9U;
+constexpr float kPi = 3.14159265F;
 
 struct Vec3 {
     float x{0.0F};
@@ -40,6 +47,11 @@ struct Vec3 {
 [[nodiscard]] Vec3 multiply(Vec3 value, float scalar) noexcept
 {
     return Vec3{value.x * scalar, value.y * scalar, value.z * scalar};
+}
+
+[[nodiscard]] Vec3 lerp(Vec3 start, Vec3 end, float t) noexcept
+{
+    return add(start, multiply(subtract(end, start), t));
 }
 
 [[nodiscard]] float dot(Vec3 left, Vec3 right) noexcept
@@ -69,6 +81,140 @@ struct Vec3 {
     }
 
     return multiply(value, 1.0F / valueLength);
+}
+
+[[nodiscard]] int worldToChunkCoord(float worldPosition, int chunkSize) noexcept
+{
+    return static_cast<int>(std::floor(worldPosition / static_cast<float>(chunkSize)));
+}
+
+[[nodiscard]] std::uint32_t nodeWord(
+    const std::vector<std::uint32_t>& packedNodes,
+    std::uint32_t nodeIndex,
+    std::uint32_t wordIndex) noexcept
+{
+    return packedNodes[nodeIndex * kPackedNodeWordCount + wordIndex];
+}
+
+[[nodiscard]] std::uint32_t nodeMetadata(
+    const std::vector<std::uint32_t>& packedNodes,
+    std::uint32_t nodeIndex) noexcept
+{
+    return nodeWord(packedNodes, nodeIndex, 8U);
+}
+
+[[nodiscard]] bool nodeIsLeaf(
+    const std::vector<std::uint32_t>& packedNodes,
+    std::uint32_t nodeIndex) noexcept
+{
+    return ((nodeMetadata(packedNodes, nodeIndex) >> 8U) & 1U) != 0U;
+}
+
+[[nodiscard]] std::uint32_t nodeChildMask(
+    const std::vector<std::uint32_t>& packedNodes,
+    std::uint32_t nodeIndex) noexcept
+{
+    return nodeMetadata(packedNodes, nodeIndex) & 0xffU;
+}
+
+[[nodiscard]] std::uint32_t nodeMaterialId(
+    const std::vector<std::uint32_t>& packedNodes,
+    std::uint32_t nodeIndex) noexcept
+{
+    return (nodeMetadata(packedNodes, nodeIndex) >> 16U) & 0xffU;
+}
+
+[[nodiscard]] std::uint32_t nodeChildIndex(
+    const std::vector<std::uint32_t>& packedNodes,
+    std::uint32_t nodeIndex,
+    std::uint32_t childIndex) noexcept
+{
+    return nodeWord(packedNodes, nodeIndex, childIndex);
+}
+
+[[nodiscard]] bool isPointSolidInChunk(
+    const WorldChunkRenderData& chunk,
+    Vec3 worldPoint) noexcept
+{
+    if (chunk.packedOctreeNodes == nullptr || chunk.packedOctreeNodes->empty()) {
+        return false;
+    }
+
+    const float chunkExtent = static_cast<float>(chunk.voxelResolution);
+    const Vec3 chunkMin{
+        static_cast<float>(chunk.coord.x * static_cast<int>(chunk.voxelResolution)),
+        static_cast<float>(chunk.coord.y * static_cast<int>(chunk.voxelResolution)),
+        static_cast<float>(chunk.coord.z * static_cast<int>(chunk.voxelResolution)),
+    };
+    const Vec3 localPoint = subtract(worldPoint, chunkMin);
+    if (localPoint.x < 0.0F || localPoint.y < 0.0F || localPoint.z < 0.0F ||
+        localPoint.x >= chunkExtent || localPoint.y >= chunkExtent || localPoint.z >= chunkExtent) {
+        return false;
+    }
+
+    const std::vector<std::uint32_t>& packedNodes = *chunk.packedOctreeNodes;
+    const std::uint32_t nodeCount = static_cast<std::uint32_t>(packedNodes.size() / kPackedNodeWordCount);
+    if (nodeCount == 0U) {
+        return false;
+    }
+
+    float nodeMinX = 0.0F;
+    float nodeMinY = 0.0F;
+    float nodeMinZ = 0.0F;
+    float nodeExtent = chunkExtent;
+    std::uint32_t nodeIndex = nodeCount - 1U;
+
+    for (;;) {
+        if (nodeIsLeaf(packedNodes, nodeIndex)) {
+            return nodeMaterialId(packedNodes, nodeIndex) !=
+                static_cast<std::uint32_t>(VoxelMaterialId::Air);
+        }
+
+        nodeExtent *= 0.5F;
+        const bool highX = localPoint.x >= nodeMinX + nodeExtent;
+        const bool highY = localPoint.y >= nodeMinY + nodeExtent;
+        const bool highZ = localPoint.z >= nodeMinZ + nodeExtent;
+        const std::uint32_t childIndex =
+            (highX ? 1U : 0U) |
+            (highY ? 2U : 0U) |
+            (highZ ? 4U : 0U);
+
+        if ((nodeChildMask(packedNodes, nodeIndex) & (1U << childIndex)) == 0U) {
+            return false;
+        }
+
+        nodeIndex = nodeChildIndex(packedNodes, nodeIndex, childIndex);
+        if (nodeIndex == SparseVoxelOctree::kInvalidChildIndex) {
+            return false;
+        }
+
+        if (highX) {
+            nodeMinX += nodeExtent;
+        }
+        if (highY) {
+            nodeMinY += nodeExtent;
+        }
+        if (highZ) {
+            nodeMinZ += nodeExtent;
+        }
+    }
+}
+
+[[nodiscard]] bool isPointSolid(
+    const std::unordered_map<ChunkKey, const WorldChunkRenderData*>& chunkLookup,
+    Vec3 worldPoint) noexcept
+{
+    const ChunkCoord chunkCoord{
+        .x = worldToChunkCoord(worldPoint.x, kWorldChunkSize),
+        .y = worldToChunkCoord(worldPoint.y, kWorldChunkSize),
+        .z = worldToChunkCoord(worldPoint.z, kWorldChunkSize),
+    };
+    const auto chunkIt = chunkLookup.find(makeChunkKey(chunkCoord));
+    if (chunkIt == chunkLookup.end() || chunkIt->second == nullptr) {
+        return false;
+    }
+
+    return isPointSolidInChunk(*chunkIt->second, worldPoint);
 }
 
 struct CameraBasis {
@@ -255,10 +401,23 @@ void WorldSceneRenderer::drawChunkWireframeOverlay()
         static_cast<float>(swapchainExtent.width),
         static_cast<float>(swapchainExtent.height),
     };
-    const float aspectRatio = displaySize.x / std::max(displaySize.y, 1.0F);
-    const float tanHalfFov = std::tan(kWireframeVerticalFovDegrees * 0.5F * 3.14159265F / 180.0F);
+    const float aspectRatio = std::max(
+        m_renderStateSnapshot.camera.projection.aspectRatio,
+        kMinProjectionAspectRatio);
+    const float verticalFovDegrees = std::max(
+        m_renderStateSnapshot.camera.projection.verticalFovDegrees,
+        kMinProjectionVerticalFovDegrees);
+    const float nearPlane = std::max(
+        m_renderStateSnapshot.camera.projection.nearClipDistance,
+        kMinProjectionNearPlane);
+    const float tanHalfFov = std::tan(verticalFovDegrees * 0.5F * kPi / 180.0F);
     const CameraBasis cameraBasis = buildCameraBasis(m_renderStateSnapshot.camera);
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    std::unordered_map<ChunkKey, const WorldChunkRenderData*> chunkLookup;
+    chunkLookup.reserve(m_renderStateSnapshot.world.chunks.size());
+    for (const WorldChunkRenderData& chunk : m_renderStateSnapshot.world.chunks) {
+        chunkLookup.emplace(makeChunkKey(chunk.coord), &chunk);
+    }
 
     constexpr std::array<std::array<int, 2>, 12> edges{{
         {0, 1}, {1, 3}, {3, 2}, {2, 0},
@@ -267,6 +426,21 @@ void WorldSceneRenderer::drawChunkWireframeOverlay()
     }};
 
     for (const WorldChunkRenderData& chunk : m_renderStateSnapshot.world.chunks) {
+        const ChunkCoord cameraChunkCoord{
+            .x = worldToChunkCoord(
+                m_renderStateSnapshot.camera.position[0],
+                static_cast<int>(chunk.voxelResolution)),
+            .y = worldToChunkCoord(
+                m_renderStateSnapshot.camera.position[1],
+                static_cast<int>(chunk.voxelResolution)),
+            .z = worldToChunkCoord(
+                m_renderStateSnapshot.camera.position[2],
+                static_cast<int>(chunk.voxelResolution)),
+        };
+        if (chunk.coord != cameraChunkCoord) {
+            continue;
+        }
+
         const float chunkExtent = static_cast<float>(chunk.voxelResolution);
         const Vec3 chunkMin{
             static_cast<float>(chunk.coord.x * static_cast<int>(chunk.voxelResolution)),
@@ -286,6 +460,8 @@ void WorldSceneRenderer::drawChunkWireframeOverlay()
             {chunkMax.x, chunkMax.y, chunkMax.z},
         }};
 
+        const int segmentCount = std::max(16, static_cast<int>(chunk.voxelResolution) * 2);
+
         for (const auto& edge : edges) {
             const Vec3 edgeDelta = subtract(corners[edge[1]], corners[edge[0]]);
             const ImU32 edgeColor = std::abs(edgeDelta.x) > 0.0F
@@ -294,16 +470,33 @@ void WorldSceneRenderer::drawChunkWireframeOverlay()
                     ? IM_COL32(96, 255, 96, 255)
                     : IM_COL32(96, 160, 255, 255));
 
-            CameraSpacePoint start = worldToCameraSpace(cameraBasis, corners[edge[0]]);
-            CameraSpacePoint end = worldToCameraSpace(cameraBasis, corners[edge[1]]);
-            if (!clipLineToNearPlane(start, end, kWireframeNearPlane)) {
-                continue;
-            }
+            for (int segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex) {
+                const float startT = static_cast<float>(segmentIndex) / static_cast<float>(segmentCount);
+                const float endT = static_cast<float>(segmentIndex + 1) / static_cast<float>(segmentCount);
+                const Vec3 worldStart = lerp(corners[edge[0]], corners[edge[1]], startT);
+                const Vec3 worldEnd = lerp(corners[edge[0]], corners[edge[1]], endT);
+                const Vec3 midpoint = lerp(worldStart, worldEnd, 0.5F);
+                const Vec3 probeDirection = normalize(subtract(cameraBasis.position, midpoint));
+                const Vec3 probePoint = add(
+                    midpoint,
+                    multiply(probeDirection, kWireframeTerrainProbeOffset));
+                if (isPointSolid(chunkLookup, probePoint)) {
+                    continue;
+                }
 
-            const ImVec2 startScreen = projectToScreen(start, tanHalfFov, aspectRatio, displaySize);
-            const ImVec2 endScreen = projectToScreen(end, tanHalfFov, aspectRatio, displaySize);
-            drawList->AddLine(startScreen, endScreen, edgeColor, 1.0F);
+                CameraSpacePoint start = worldToCameraSpace(cameraBasis, worldStart);
+                CameraSpacePoint end = worldToCameraSpace(cameraBasis, worldEnd);
+                if (!clipLineToNearPlane(start, end, nearPlane)) {
+                    continue;
+                }
+
+                const ImVec2 startScreen = projectToScreen(start, tanHalfFov, aspectRatio, displaySize);
+                const ImVec2 endScreen = projectToScreen(end, tanHalfFov, aspectRatio, displaySize);
+                drawList->AddLine(startScreen, endScreen, edgeColor, 1.0F);
+            }
         }
+
+        break;
     }
 }
 

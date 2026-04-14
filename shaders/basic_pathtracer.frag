@@ -34,7 +34,6 @@ layout(push_constant) uniform PushConstants {
 const float kRayEpsilon = 0.001;
 const float kChunkSize = 32.0;
 const vec3 kWorldUp = vec3(0.0, 1.0, 0.0);
-const float kVerticalFovDegrees = 42.0;
 
 const uint kMaterialAir = 0u;
 const uint kMaterialGrass = 1u;
@@ -506,10 +505,11 @@ void main()
         (pc.settings.x + 1u) * 26699u;
 
     const vec3 forward = normalize(pc.cameraForward.xyz);
-    const vec3 right = normalize(cross(forward, kWorldUp));
+    const vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : kWorldUp;
+    const vec3 right = normalize(cross(forward, worldUp));
     const vec3 up = normalize(cross(right, forward));
-    const float aspectRatio = pc.frameData.x / max(pc.frameData.y, 1.0);
-    const float tanHalfFov = tan(radians(kVerticalFovDegrees) * 0.5);
+    const float aspectRatio = max(pc.frameData.w, 0.01);
+    const float tanHalfFov = tan(radians(max(pc.frameData.z, 1.0)) * 0.5);
 
     vec3 color = vec3(0.0);
     const uint sampleCount = max(pc.settings.y, 1u);

@@ -14,7 +14,6 @@ SparseVoxelOctree SparseVoxelOctree::build(
         return octree;
     }
 
-    octree.m_stats.depth = std::bit_width(resolution);
     const std::uint32_t rootIndex = buildNode(
         octree,
         voxels,
@@ -31,7 +30,8 @@ SparseVoxelOctree SparseVoxelOctree::build(
         return octree;
     }
 
-    octree.m_stats.nodeCount = octree.m_nodes.size();
+    octree.m_stats = {};
+    accumulateBuildStats(octree, rootIndex, resolution, 0U, octree.m_stats);
     return octree;
 }
 
@@ -63,14 +63,12 @@ std::uint32_t SparseVoxelOctree::buildNode(
 
         const std::uint32_t nodeIndex = static_cast<std::uint32_t>(octree.m_nodes.size());
         octree.m_nodes.push_back(leafNode);
-        ++octree.m_stats.leafCount;
-        ++octree.m_stats.solidVoxelCount;
-        octree.m_stats.depth = std::max(octree.m_stats.depth, depth + 1U);
         return nodeIndex;
     }
 
     Node node{};
     node.leaf = false;
+    const std::size_t subtreeStartIndex = octree.m_nodes.size();
 
     const std::uint32_t childExtent = extent / 2U;
     for (std::uint32_t childIndex = 0; childIndex < 8; ++childIndex) {
@@ -101,10 +99,71 @@ std::uint32_t SparseVoxelOctree::buildNode(
         return kInvalidChildIndex;
     }
 
+    if (node.childMask == 0xFFU) {
+        const Node& firstChild = octree.m_nodes[node.children[0]];
+        if (firstChild.leaf) {
+            const std::uint8_t collapsedMaterialId = firstChild.materialId;
+            bool canCollapse = collapsedMaterialId != 0U;
+            for (std::uint32_t childIndex = 1U; childIndex < 8U && canCollapse; ++childIndex) {
+                const Node& childNode = octree.m_nodes[node.children[childIndex]];
+                canCollapse =
+                    childNode.leaf &&
+                    childNode.materialId == collapsedMaterialId;
+            }
+
+            if (canCollapse) {
+                octree.m_nodes.resize(subtreeStartIndex);
+
+                Node leafNode{};
+                leafNode.maxDensity = node.maxDensity;
+                leafNode.materialId = collapsedMaterialId;
+                leafNode.leaf = true;
+
+                const std::uint32_t nodeIndex = static_cast<std::uint32_t>(octree.m_nodes.size());
+                octree.m_nodes.push_back(leafNode);
+                return nodeIndex;
+            }
+        }
+    }
+
     const std::uint32_t nodeIndex = static_cast<std::uint32_t>(octree.m_nodes.size());
     octree.m_nodes.push_back(node);
-    octree.m_stats.depth = std::max(octree.m_stats.depth, depth + 1U);
     return nodeIndex;
+}
+
+void SparseVoxelOctree::accumulateBuildStats(
+    const SparseVoxelOctree& octree,
+    std::uint32_t nodeIndex,
+    std::uint32_t extent,
+    std::uint32_t depth,
+    BuildStats& stats) noexcept
+{
+    const Node& node = octree.m_nodes[nodeIndex];
+    ++stats.nodeCount;
+    stats.depth = std::max(stats.depth, depth + 1U);
+
+    if (node.leaf) {
+        ++stats.leafCount;
+        stats.solidVoxelCount +=
+            static_cast<std::size_t>(extent) *
+            static_cast<std::size_t>(extent) *
+            static_cast<std::size_t>(extent);
+        return;
+    }
+
+    const std::uint32_t childExtent = extent / 2U;
+    for (std::uint32_t childIndex = 0U; childIndex < 8U; ++childIndex) {
+        if ((node.childMask & (1U << childIndex)) == 0U) {
+            continue;
+        }
+
+        const std::uint32_t childNodeIndex = node.children[childIndex];
+        if (childNodeIndex == kInvalidChildIndex) {
+            continue;
+        }
+
+        accumulateBuildStats(octree, childNodeIndex, childExtent, depth + 1U, stats);
+    }
 }
 
 } // namespace Meridian

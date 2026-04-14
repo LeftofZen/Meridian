@@ -25,6 +25,25 @@ constexpr std::array<std::string_view, 10> kSystemNames{
     "World",
 };
 
+[[nodiscard]] CameraRenderState buildCameraRenderState(
+    const FreeCameraController& cameraController,
+    const VulkanContext* vulkanContext) noexcept
+{
+    CameraRenderState cameraState = cameraController.cameraState();
+    if (vulkanContext == nullptr) {
+        return cameraState;
+    }
+
+    const VkExtent2D swapchainExtent = vulkanContext->getSwapchainExtent();
+    if (swapchainExtent.width > 0 && swapchainExtent.height > 0) {
+        cameraState.projection.aspectRatio =
+            static_cast<float>(swapchainExtent.width) /
+            static_cast<float>(std::max(swapchainExtent.height, 1U));
+    }
+
+    return cameraState;
+}
+
 } // namespace
 
 void Engine::setUpdateRateLimit(float updatesPerSecond) noexcept
@@ -232,9 +251,12 @@ bool Engine::init()
         return false;
     }
     if (m_freeCameraController) {
+        const CameraRenderState cameraState =
+            buildCameraRenderState(*m_freeCameraController, m_vulkan.get());
         m_world->setChunkGenerationDistanceChunks(
             m_renderStateStore.worldChunkGenerationDistanceChunks());
-        m_world->setStreamingCamera(m_freeCameraController->cameraState());
+        m_world->setStreamingCamera(cameraState);
+        m_renderStateStore.updateCameraState(cameraState);
     }
     m_debugOverlay->setTerrainSettingsCallbacks(
         [this]() {
@@ -291,9 +313,12 @@ void Engine::run()
                     ZoneName(systemName.data(), systemName.size());
                     system->update(deltaTimeSeconds);
                     if (system == m_freeCameraController.get() && m_world != nullptr) {
+                        const CameraRenderState cameraState =
+                            buildCameraRenderState(*m_freeCameraController, m_vulkan.get());
                         m_world->setChunkGenerationDistanceChunks(
                             m_renderStateStore.worldChunkGenerationDistanceChunks());
-                        m_world->setStreamingCamera(m_freeCameraController->cameraState());
+                        m_world->setStreamingCamera(cameraState);
+                        m_renderStateStore.updateCameraState(cameraState);
                     }
                 }
             }
@@ -324,10 +349,6 @@ void Engine::run()
                     worldRenderRevision);
             }
         }
-        if (m_freeCameraController) {
-            m_renderStateStore.updateCameraState(m_freeCameraController->cameraState());
-        }
-
         FrameMarkNamed("Update");
         limitUpdateRate(currentCounter, performanceFrequency);
     }

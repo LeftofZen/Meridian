@@ -10,7 +10,6 @@
 
 #include <bit>
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -20,6 +19,13 @@
 namespace Meridian {
 
 namespace {
+
+[[nodiscard]] bool isChunkFullySolid(const WorldChunkStorage& chunkStorage) noexcept
+{
+    const std::uint64_t resolution = chunkStorage.voxelResolution();
+    const std::uint64_t voxelCount = resolution * resolution * resolution;
+    return chunkStorage.solidVoxelCount() == voxelCount;
+}
 
 [[nodiscard]] VoxelMaterialId defaultMaterialForChunk(ChunkCoord coord) noexcept
 {
@@ -200,7 +206,7 @@ struct TerrainMaterialSample {
 
 void logResidentChunk(const WorldChunkStorage& chunk, std::size_t residentCount, bool loadedFromDatabase)
 {
-    MRD_INFO(
+    MRD_TRACE(
         "World chunk [{}, {}, {}] {} (material {}, {}^3 voxels, solid {}, svo nodes {}, resident: {})",
         chunk.coord().x,
         chunk.coord().y,
@@ -307,6 +313,7 @@ void WorldChunkManager::shutdown()
     m_chunkRecords.clear();
     m_heightmapTiles.clear();
     m_renderChunkData.clear();
+    m_solidOccluderKeys.clear();
     m_residentChunks.clear();
     m_chunkDatabase.reset();
     ++m_renderRevision;
@@ -375,6 +382,11 @@ std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
 void WorldChunkManager::cacheResidentChunkRenderData(const WorldChunkStorage& chunkStorage)
 {
     m_renderChunkData.insert_or_assign(chunkStorage.key(), createRenderData(chunkStorage));
+    if (isChunkFullySolid(chunkStorage)) {
+        m_solidOccluderKeys.insert(chunkStorage.key());
+    } else {
+        m_solidOccluderKeys.erase(chunkStorage.key());
+    }
 }
 
 WorldChunkRenderData WorldChunkManager::createRenderData(const WorldChunkStorage& chunkStorage)
@@ -403,6 +415,7 @@ WorldChunkRenderData WorldChunkManager::createRenderData(const WorldChunkStorage
 
 void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState) noexcept
 {
+    m_streamingCameraState = cameraState;
     m_streamingFocusChunk = ChunkCoord{
         .x = worldToChunkCoord(cameraState.position[0]),
         .y = worldToChunkCoord(cameraState.position[1]),
@@ -482,6 +495,22 @@ bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
     return withinXZ && withinY;
 }
 
+bool WorldChunkManager::shouldGenerateChunk(ChunkCoord coord) const noexcept
+{
+    if (!shouldRequestChunk(coord)) {
+        return false;
+    }
+
+    if (!m_hasStreamingCamera) {
+        return true;
+    }
+
+    return m_chunkGenerationVisibility.canGenerateChunk(
+        coord,
+        m_streamingCameraState,
+        m_solidOccluderKeys);
+}
+
 void WorldChunkManager::persistResidentChunks()
 {
     if (m_chunkDatabase == nullptr) {
@@ -522,6 +551,7 @@ void WorldChunkManager::pruneChunksOutsideRetention()
         }
 
         persistResidentChunk(chunkStorage);
+        m_solidOccluderKeys.erase(key);
         m_residentChunks.erase(key);
         m_renderChunkData.erase(key);
         m_chunkRecords.erase(key);
@@ -572,7 +602,12 @@ void WorldChunkManager::requestChunk(ChunkCoord coord)
     }
 
     const ChunkKey key = makeChunkKey(coord);
-    if (m_chunkRecords.contains(key)) {
+    auto existingRecord = m_chunkRecords.find(key);
+    if (existingRecord != m_chunkRecords.end()) {
+        if (existingRecord->second.status == ChunkStatus::DeferredGeneration && shouldGenerateChunk(coord)) {
+            existingRecord->second.status = ChunkStatus::Requested;
+            m_pendingRequests.push_back(coord);
+        }
         return;
     }
 
@@ -592,6 +627,7 @@ void WorldChunkManager::rebuildActiveTerrain()
     m_chunkRecords.clear();
     m_heightmapTiles.clear();
     m_renderChunkData.clear();
+    m_solidOccluderKeys.clear();
     m_residentChunks.clear();
     ++m_renderRevision;
 
@@ -642,6 +678,11 @@ void WorldChunkManager::dispatchChunkJobs()
                 }
                 continue;
             }
+        }
+
+        if (!shouldGenerateChunk(coord)) {
+            chunkIt->second.status = ChunkStatus::DeferredGeneration;
+            continue;
         }
 
         chunkIt->second.status = ChunkStatus::Generating;

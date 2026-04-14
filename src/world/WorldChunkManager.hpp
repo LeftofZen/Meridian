@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/CameraState.hpp"
+#include "world/ChunkGenerationVisibility.hpp"
 #include "world/WorldData.hpp"
 #include "world/TerrainHeightmapGenerator.hpp"
 #include "world/WorldRenderData.hpp"
@@ -12,6 +13,7 @@
 #include <future>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Meridian {
@@ -47,6 +49,7 @@ private:
     enum class ChunkStatus {
         Requested,
         Generating,
+        DeferredGeneration,
         Resident,
     };
 
@@ -76,6 +79,7 @@ private:
     void cacheResidentChunkRenderData(const WorldChunkStorage& chunkStorage);
     [[nodiscard]] bool shouldKeepChunk(ChunkCoord coord) const noexcept;
     [[nodiscard]] bool shouldRequestChunk(ChunkCoord coord) const noexcept;
+    [[nodiscard]] bool shouldGenerateChunk(ChunkCoord coord) const noexcept;
     [[nodiscard]] int generationRadiusXZ() const noexcept;
     [[nodiscard]] int retentionRadiusXZ() const noexcept;
     [[nodiscard]] static WorldChunkRenderData createRenderData(const WorldChunkStorage& chunkStorage);
@@ -104,12 +108,15 @@ private:
     bool m_initialised{false};
     bool m_hasStreamingCamera{false};
     ChunkCoord m_streamingFocusChunk{};
+    CameraRenderState m_streamingCameraState{};
+    ChunkGenerationVisibility m_chunkGenerationVisibility;
     float m_generationDistanceChunks{kDefaultGenerationDistanceChunks};
     std::deque<ChunkCoord> m_pendingRequests;
     std::vector<ChunkJob> m_inFlightJobs;
     std::unordered_map<ChunkKey, ChunkRecord> m_chunkRecords;
     std::unordered_map<ChunkKey, TerrainHeightmapTile> m_heightmapTiles;
     std::unordered_map<ChunkKey, WorldChunkRenderData> m_renderChunkData;
+    std::unordered_set<ChunkKey> m_solidOccluderKeys;
     WorldSpatialHashGrid m_residentChunks;
     std::uint64_t m_renderRevision{0};
 };

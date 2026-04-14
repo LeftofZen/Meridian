@@ -57,6 +57,12 @@ private:
         std::uint32_t baseZ,
         std::uint32_t extent,
         std::uint32_t depth);
+    static void accumulateBuildStats(
+        const SparseVoxelOctree& octree,
+        std::uint32_t nodeIndex,
+        std::uint32_t extent,
+        std::uint32_t depth,
+        BuildStats& stats) noexcept;
 
     std::vector<Node> m_nodes;
     BuildStats m_stats;

@@ -155,8 +155,8 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
         .frameData = {
             static_cast<float>(extent.width),
             static_cast<float>(extent.height),
-            0.0F,
-            0.0F,
+            m_renderStateSnapshot.camera.projection.verticalFovDegrees,
+            m_renderStateSnapshot.camera.projection.aspectRatio,
         },
         .cameraPosition = {
             m_renderStateSnapshot.camera.position[0],
