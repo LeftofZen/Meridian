@@ -35,6 +35,10 @@ Detailed runtime profiling now uses Tracy instead of the in-engine timing tables
 
 In VS Code, use the `Run Meridian + Tracy` launch compound to build, open the Tracy viewer, and start Meridian together. If you only need the viewer, run the `Open Tracy Profiler (VS 2026)` task. Both prompt for the Tracy viewer path so you can point them at a local Tracy viewer install.
 
+RenderDoc shader debugging is supported in the normal debug build. Meridian now compiles GLSL shaders to SPIR-V with embedded debug information and assigns Vulkan debug names to the main swapchain, pipeline, buffer, and synchronization objects when `VK_EXT_debug_utils` is available. That gives RenderDoc readable capture object names and source-level shader mapping.
+
+For RenderDoc captures, launch [build/vs2026-debug/Debug/Meridian.exe](build/vs2026-debug/Debug/Meridian.exe) from RenderDoc or inject into a running debug build. If RenderDoc cannot show source-level shader information, rebuild once to regenerate the `.spv` files with current sources before taking the capture.
+
 All future runtime-facing work should add or update Tracy coverage as part of the implementation, rather than relying on ad hoc timing code.
 
 - Tracy github: https://github.com/wolfpld/tracy

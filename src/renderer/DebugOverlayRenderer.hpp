@@ -32,6 +32,14 @@ public:
         m_pathTracerSettings = &pathTracerSettings;
     }
 
+    void setUpdateRateLimitCallbacks(
+        std::function<float()> getUpdateRateLimit,
+        std::function<void(float)> setUpdateRateLimit)
+    {
+        m_getUpdateRateLimit = std::move(getUpdateRateLimit);
+        m_setUpdateRateLimit = std::move(setUpdateRateLimit);
+    }
+
     void setTerrainSettingsCallbacks(
         std::function<TerrainHeightmapSettings()> getTerrainSettings,
         std::function<void(const TerrainHeightmapSettings&)> requestTerrainSettings)
@@ -51,6 +59,8 @@ private:
     PathTracerSettings* m_pathTracerSettings{nullptr};
     RenderStateStore* m_renderStateStore{nullptr};
     RenderStateSnapshot m_renderStateSnapshot;
+    std::function<float()> m_getUpdateRateLimit;
+    std::function<void(float)> m_setUpdateRateLimit;
     std::function<TerrainHeightmapSettings()> m_getTerrainSettings;
     std::function<void(const TerrainHeightmapSettings&)> m_requestTerrainSettings;
 };

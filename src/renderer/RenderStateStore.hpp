@@ -30,6 +30,7 @@ struct WorldRenderSnapshot {
 
 struct WorldRenderSettingsSnapshot {
     float renderDistanceChunks{8.0F};
+    float chunkGenerationDistanceChunks{8.0F};
     std::uint64_t revision{0};
 };
 
@@ -110,10 +111,30 @@ public:
         ++m_snapshot.worldRenderSettings.revision;
     }
 
+    void setWorldChunkGenerationDistanceChunks(float generationDistanceChunks)
+    {
+        std::scoped_lock lock(m_mutex);
+        const float clampedDistance = std::clamp(generationDistanceChunks, 1.0F, 32.0F);
+        if (std::abs(
+                m_snapshot.worldRenderSettings.chunkGenerationDistanceChunks - clampedDistance) <
+            0.001F) {
+            return;
+        }
+
+        m_snapshot.worldRenderSettings.chunkGenerationDistanceChunks = clampedDistance;
+        ++m_snapshot.worldRenderSettings.revision;
+    }
+
     [[nodiscard]] float worldRenderDistanceChunks() const
     {
         std::scoped_lock lock(m_mutex);
         return m_snapshot.worldRenderSettings.renderDistanceChunks;
+    }
+
+    [[nodiscard]] float worldChunkGenerationDistanceChunks() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_snapshot.worldRenderSettings.chunkGenerationDistanceChunks;
     }
 
     [[nodiscard]] RenderStateSnapshot snapshot() const

@@ -130,6 +130,13 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
         return;
     }
 
+    const std::uint32_t fragmentShadingRate = m_context->fragmentShadingRateTexelSize();
+
+    const TracyVkCtx tracyVkContext = m_context->tracyVkContext();
+    if (tracyVkContext != nullptr) {
+        TracyVkZone(tracyVkContext, commandBuffer, "Path Tracer Draw");
+    }
+
     const VkExtent2D extent = m_context->getSwapchainExtent();
 
     VkViewport viewport = kDefaultViewport;
@@ -214,7 +221,9 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
         0,
         sizeof(PushConstants),
         &pushConstants);
+    m_context->applyFragmentShadingRate(commandBuffer, fragmentShadingRate);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    m_context->applyFragmentShadingRate(commandBuffer, 1U);
 }
 
 bool PathTracerRenderer::createDescriptorResources()
@@ -261,6 +270,11 @@ bool PathTracerRenderer::createDescriptorResources()
         return false;
     }
 
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(m_descriptorSetLayout),
+        VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+        "Path Tracer Descriptor Set Layout");
+
     const VkDescriptorPoolSize poolSizes[] = {
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -283,6 +297,11 @@ bool PathTracerRenderer::createDescriptorResources()
         return false;
     }
 
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(m_descriptorPool),
+        VK_OBJECT_TYPE_DESCRIPTOR_POOL,
+        "Path Tracer Descriptor Pool");
+
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = m_descriptorPool;
@@ -301,6 +320,10 @@ bool PathTracerRenderer::createDescriptorResources()
 
     for (std::size_t index = 0; index < frameCount; ++index) {
         m_frameResources[index].descriptorSet = descriptorSets[index];
+        m_context->setObjectDebugName(
+            reinterpret_cast<std::uint64_t>(descriptorSets[index]),
+            VK_OBJECT_TYPE_DESCRIPTOR_SET,
+            std::format("Path Tracer Descriptor Set {}", index));
     }
 
     return true;
@@ -410,6 +433,11 @@ bool PathTracerRenderer::createPipeline()
         return false;
     }
 
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(m_pipelineLayout),
+        VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+        "Path Tracer Pipeline Layout");
+
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.stageCount = 2;
@@ -436,6 +464,11 @@ bool PathTracerRenderer::createPipeline()
         destroyPipeline();
         return false;
     }
+
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(m_pipeline),
+        VK_OBJECT_TYPE_PIPELINE,
+        "Path Tracer Pipeline");
 
     return true;
 }
@@ -725,6 +758,15 @@ bool PathTracerRenderer::createBuffer(
         destroyBuffer(buffer);
         return false;
     }
+
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(buffer.buffer),
+        VK_OBJECT_TYPE_BUFFER,
+        "Path Tracer Storage Buffer");
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(buffer.memory),
+        VK_OBJECT_TYPE_DEVICE_MEMORY,
+        "Path Tracer Buffer Memory");
 
     buffer.size = sizeInBytes;
     return true;

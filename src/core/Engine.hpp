@@ -20,6 +20,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -56,10 +57,13 @@ public:
     [[nodiscard]] ScriptingSystem& getScripting() noexcept { return *m_scripting; }
     [[nodiscard]] TaskSystem& getTasks() noexcept { return *m_tasks; }
     [[nodiscard]] World& getWorld() noexcept { return *m_world; }
+    void setUpdateRateLimit(float updatesPerSecond) noexcept;
+    [[nodiscard]] float updateRateLimit() const noexcept { return m_updateRateLimit; }
 
 private:
     void startRenderLoop();
     void stopRenderLoop();
+    void limitUpdateRate(std::uint64_t frameStartCounter, float performanceFrequency) const;
 
     std::unique_ptr<Window> m_window;
     std::unique_ptr<InputManager> m_inputManager;
@@ -78,6 +82,7 @@ private:
     std::unique_ptr<World> m_world;
     RenderStateStore m_renderStateStore;
     std::uint64_t m_cachedWorldRenderRevision{std::numeric_limits<std::uint64_t>::max()};
+    float m_updateRateLimit{200.0F};
     std::atomic<bool> m_renderLoopRunning{false};
     std::thread m_renderThread;
 };

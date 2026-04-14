@@ -4,6 +4,8 @@
 
 #include <volk.h>
 
+#include <tracy/tracy/TracyVulkan.hpp>
+
 #include <SDL3/SDL_vulkan.h>
 
 #include <array>
@@ -11,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <string>
@@ -75,8 +78,29 @@ public:
     {
         return m_inFlightFences.empty() ? 0 : (m_currentFrame % m_inFlightFences.size());
     }
+    [[nodiscard]] TracyVkCtx tracyVkContext() const noexcept { return m_tracyVkContext; }
+    [[nodiscard]] bool supportsFragmentShadingRate() const noexcept
+    {
+        return m_fragmentShadingRateSupported;
+    }
+    [[nodiscard]] std::span<const std::uint32_t> supportedFragmentShadingRates() const noexcept
+    {
+        return m_supportedFragmentShadingRates;
+    }
+    [[nodiscard]] std::uint32_t fragmentShadingRateTexelSize() const noexcept
+    {
+        return m_fragmentShadingRateTexelSize;
+    }
     void setVSyncEnabled(bool enabled);
     [[nodiscard]] const char* getPresentModeName() const noexcept;
+    void setObjectDebugName(
+        std::uint64_t objectHandle,
+        VkObjectType objectType,
+        std::string_view name) const noexcept;
+    void setFragmentShadingRateTexelSize(std::uint32_t texelSize) noexcept;
+    void applyFragmentShadingRate(
+        VkCommandBuffer commandBuffer,
+        std::uint32_t texelSize) const noexcept;
 
 private:
     [[nodiscard]] bool createInstance();
@@ -91,8 +115,10 @@ private:
     [[nodiscard]] bool createCommandPool();
     [[nodiscard]] bool createCommandBuffers();
     [[nodiscard]] bool createSyncObjects();
+    [[nodiscard]] bool createTracyContext();
     [[nodiscard]] bool renderFrame();
     [[nodiscard]] bool recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void initialiseFragmentShadingRateSupport() noexcept;
 
     void destroySwapchain();
     void destroyRenderResources();
@@ -157,6 +183,7 @@ private:
     std::vector<VkSemaphore> m_renderFinishedSemaphores;
     std::vector<VkFence> m_inFlightFences;
     std::vector<VkFence> m_imagesInFlight;
+    TracyVkCtx m_tracyVkContext{nullptr};
 
     VkQueue m_graphicsQueue{VK_NULL_HANDLE};
     VkQueue m_computeQueue{VK_NULL_HANDLE};
@@ -168,19 +195,23 @@ private:
     std::optional<uint32_t> m_computeQueueFamily;
     std::optional<uint32_t> m_presentQueueFamily;
     bool m_validationEnabled{false};
+    bool m_debugUtilsEnabled{false};
+    bool m_fragmentShadingRateSupported{false};
     SDL_Window* m_windowHandle{nullptr};
     std::size_t m_currentFrame{0};
     bool m_vsyncEnabled{false};
     bool m_presentationRebuildRequested{false};
     uint32_t m_minImageCount{2};
     VkPresentModeKHR m_presentMode{VK_PRESENT_MODE_FIFO_KHR};
+    std::vector<std::uint32_t> m_supportedFragmentShadingRates{1U};
+    std::uint32_t m_fragmentShadingRateTexelSize{1U};
     std::mutex m_queueSubmitMutex;
     IRenderFrontend* m_renderFrontend{nullptr};
     std::unique_ptr<ShaderLibrary> m_shaderLibrary;
 
     static constexpr std::array<const char*, 1> k_validationLayers{
         "VK_LAYER_KHRONOS_validation"};
-    static constexpr std::array<const char*, 1> k_deviceExtensions{
+    static constexpr std::array<const char*, 1> k_requiredDeviceExtensions{
         VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 };
 

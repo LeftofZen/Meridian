@@ -301,6 +301,7 @@ void WorldChunkManager::shutdown()
         return;
     }
 
+    persistResidentChunks();
     m_pendingRequests.clear();
     m_inFlightJobs.clear();
     m_chunkRecords.clear();
@@ -402,19 +403,34 @@ void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState)
     m_hasStreamingCamera = true;
 }
 
-void WorldChunkManager::setStreamingDistanceChunks(float streamingDistanceChunks) noexcept
+void WorldChunkManager::setRenderDistanceChunks(float renderDistanceChunks) noexcept
 {
-    m_streamingDistanceChunks = std::clamp(streamingDistanceChunks, 1.0F, 32.0F);
+    m_renderDistanceChunks = std::clamp(renderDistanceChunks, 1.0F, 32.0F);
 }
 
-int WorldChunkManager::streamRadiusXZ() const noexcept
+void WorldChunkManager::setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept
 {
-    return std::max(1, static_cast<int>(std::ceil(m_streamingDistanceChunks)));
+    m_generationDistanceChunks = std::clamp(generationDistanceChunks, 1.0F, 32.0F);
+}
+
+int WorldChunkManager::renderRadiusXZ() const noexcept
+{
+    return std::max(1, static_cast<int>(std::ceil(m_renderDistanceChunks)));
+}
+
+int WorldChunkManager::generationRadiusXZ() const noexcept
+{
+    return std::max(1, static_cast<int>(std::ceil(m_generationDistanceChunks)));
+}
+
+int WorldChunkManager::residentRadiusXZ() const noexcept
+{
+    return std::max(renderRadiusXZ(), generationRadiusXZ());
 }
 
 int WorldChunkManager::retentionRadiusXZ() const noexcept
 {
-    return std::max(1, static_cast<int>(std::ceil(m_streamingDistanceChunks + kRetentionPaddingChunks)));
+    return std::max(1, static_cast<int>(std::ceil(static_cast<float>(residentRadiusXZ()) + kRetentionPaddingChunks)));
 }
 
 void WorldChunkManager::queueChunksAroundFocus()
@@ -424,7 +440,7 @@ void WorldChunkManager::queueChunksAroundFocus()
     }
 
     ZoneScopedN("WorldChunkManager::queueChunksAroundFocus");
-    const int radiusXZ = streamRadiusXZ();
+    const int radiusXZ = residentRadiusXZ();
 
     for (int y = m_streamingFocusChunk.y - kStreamChunksBelowFocus;
          y <= m_streamingFocusChunk.y + kStreamChunksAboveFocus;
@@ -463,7 +479,7 @@ bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
         return true;
     }
 
-    const int radiusXZ = streamRadiusXZ();
+    const int radiusXZ = residentRadiusXZ();
     const bool withinXZ =
         std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
         std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
@@ -473,6 +489,46 @@ bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
     return withinXZ && withinY;
 }
 
+bool WorldChunkManager::shouldGenerateChunk(ChunkCoord coord) const noexcept
+{
+    if (!m_hasStreamingCamera) {
+        return true;
+    }
+
+    const int radiusXZ = generationRadiusXZ();
+    const bool withinXZ =
+        std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
+        std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
+    const bool withinY =
+        coord.y >= m_streamingFocusChunk.y - kStreamChunksBelowFocus &&
+        coord.y <= m_streamingFocusChunk.y + kStreamChunksAboveFocus;
+    return withinXZ && withinY;
+}
+
+void WorldChunkManager::persistResidentChunks()
+{
+    if (m_chunkDatabase == nullptr) {
+        return;
+    }
+
+    for (const auto& [key, chunkStorage] : m_residentChunks.chunks()) {
+        (void)key;
+        persistResidentChunk(chunkStorage);
+    }
+}
+
+void WorldChunkManager::persistResidentChunk(const WorldChunkStorage& chunkStorage)
+{
+    if (m_chunkDatabase == nullptr) {
+        return;
+    }
+
+    const TerrainHeightmapSettings heightmapSettings =
+        m_heightmapGenerator != nullptr ? m_heightmapGenerator->settings() : TerrainHeightmapSettings{};
+    const std::uint64_t settingsSignature = terrainSettingsSignature(heightmapSettings);
+    (void)m_chunkDatabase->storeChunk(chunkStorage, settingsSignature);
+}
+
 void WorldChunkManager::pruneChunksOutsideRetention()
 {
     ZoneScopedN("WorldChunkManager::pruneChunksOutsideRetention");
@@ -480,13 +536,15 @@ void WorldChunkManager::pruneChunksOutsideRetention()
     const int radiusXZ = retentionRadiusXZ();
 
     for (auto it = m_residentChunks.chunks().begin(); it != m_residentChunks.chunks().end();) {
-        const ChunkCoord coord = it->second.coord();
+        const WorldChunkStorage& chunkStorage = it->second;
+        const ChunkCoord coord = chunkStorage.coord();
         const ChunkKey key = it->first;
         ++it;
         if (shouldKeepChunk(coord)) {
             continue;
         }
 
+        persistResidentChunk(chunkStorage);
         m_residentChunks.erase(key);
         m_renderChunkData.erase(key);
         m_chunkRecords.erase(key);
@@ -537,7 +595,12 @@ void WorldChunkManager::requestChunk(ChunkCoord coord)
     }
 
     const ChunkKey key = makeChunkKey(coord);
-    if (m_chunkRecords.contains(key)) {
+    auto existingRecord = m_chunkRecords.find(key);
+    if (existingRecord != m_chunkRecords.end()) {
+        if (existingRecord->second.status == ChunkStatus::Missing && shouldGenerateChunk(coord)) {
+            existingRecord->second.status = ChunkStatus::Requested;
+            m_pendingRequests.push_back(coord);
+        }
         return;
     }
 
@@ -607,6 +670,11 @@ void WorldChunkManager::dispatchChunkJobs()
                 }
                 continue;
             }
+        }
+
+        if (!shouldGenerateChunk(coord)) {
+            chunkIt->second.status = ChunkStatus::Missing;
+            continue;
         }
 
         chunkIt->second.status = ChunkStatus::Generating;

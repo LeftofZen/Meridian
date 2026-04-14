@@ -43,7 +43,6 @@ const uint kMaterialDirt = 3u;
 const uint kMaterialSand = 4u;
 const uint kMaterialSnow = 5u;
 const uint kMaterialForest = 6u;
-const int kMaxDdaSteps = 1024;
 
 struct Ray {
     vec3 origin;
@@ -138,6 +137,22 @@ vec3 materialAlbedo(uint materialId)
     return vec3(0.0);
 }
 
+uint lookupChunkIndex(ivec3 chunkCoord)
+{
+    const ivec3 relativeChunkCoord = chunkCoord - pc.chunkGridOrigin.xyz;
+
+    if (any(lessThan(relativeChunkCoord, ivec3(0))) ||
+        any(greaterThanEqual(relativeChunkCoord, ivec3(pc.chunkGridSize.xyz)))) {
+        return 0u;
+    }
+
+    const uint lookupIndex =
+        uint(relativeChunkCoord.x) +
+        uint(relativeChunkCoord.y) * pc.chunkGridSize.x +
+        uint(relativeChunkCoord.z) * pc.chunkGridSize.x * pc.chunkGridSize.y;
+    return chunkLookup[lookupIndex];
+}
+
 int floorDivInt(int value, int divisor)
 {
     return value >= 0 ? value / divisor : -(((-value - 1) / divisor) + 1);
@@ -154,40 +169,9 @@ int chunkResolution()
     return pc.chunkGridSize.w > 0u ? int(pc.chunkGridSize.w) : int(kChunkSize);
 }
 
-uint sampleVoxelMaterial(ivec3 worldVoxelCoord)
+bool hasSceneChunks()
 {
-    const int resolution = chunkResolution();
-    const ivec3 chunkCoord = ivec3(
-        floorDivInt(worldVoxelCoord.x, resolution),
-        floorDivInt(worldVoxelCoord.y, resolution),
-        floorDivInt(worldVoxelCoord.z, resolution));
-    const ivec3 localCoord = ivec3(
-        positiveModInt(worldVoxelCoord.x, resolution),
-        positiveModInt(worldVoxelCoord.y, resolution),
-        positiveModInt(worldVoxelCoord.z, resolution));
-    const ivec3 relativeChunkCoord = chunkCoord - pc.chunkGridOrigin.xyz;
-
-    if (any(lessThan(relativeChunkCoord, ivec3(0))) ||
-        any(greaterThanEqual(relativeChunkCoord, ivec3(pc.chunkGridSize.xyz)))) {
-        return kMaterialAir;
-    }
-
-    const uint lookupIndex =
-        uint(relativeChunkCoord.x) +
-        uint(relativeChunkCoord.y) * pc.chunkGridSize.x +
-        uint(relativeChunkCoord.z) * pc.chunkGridSize.x * pc.chunkGridSize.y;
-    const uint chunkIndexPlusOne = chunkLookup[lookupIndex];
-    if (chunkIndexPlusOne == 0u) {
-        return kMaterialAir;
-    }
-
-    const GpuChunk chunk = chunks[chunkIndexPlusOne - 1u];
-    const uint voxelOffset = chunk.offsets.x;
-    const uint linearIndex =
-        uint(localCoord.x) +
-        uint(localCoord.y) * uint(resolution) +
-        uint(localCoord.z) * uint(resolution * resolution);
-    return voxelMaterials[voxelOffset + linearIndex];
+    return all(greaterThan(pc.chunkGridSize.xyz, uvec3(0u)));
 }
 
 bool intersectSceneBounds(Ray ray, out float tEnter, out vec3 entryNormal)
@@ -222,7 +206,7 @@ bool sceneIntersect(Ray ray, out Hit hit)
     hit.found = false;
     hit.t = 1e30;
 
-    if (pc.settings.w == 0u) {
+    if (!hasSceneChunks()) {
         return false;
     }
 
@@ -234,7 +218,16 @@ bool sceneIntersect(Ray ray, out Hit hit)
 
     float currentT = max(tEnter, 0.0);
     const vec3 startPosition = ray.origin + ray.direction * (currentT + kRayEpsilon);
+    const int resolution = chunkResolution();
     ivec3 voxelCoord = ivec3(floor(startPosition));
+    ivec3 chunkCoord = ivec3(
+        floorDivInt(voxelCoord.x, resolution),
+        floorDivInt(voxelCoord.y, resolution),
+        floorDivInt(voxelCoord.z, resolution));
+    ivec3 localCoord = ivec3(
+        positiveModInt(voxelCoord.x, resolution),
+        positiveModInt(voxelCoord.y, resolution),
+        positiveModInt(voxelCoord.z, resolution));
     const ivec3 stepDir = ivec3(sign(ray.direction));
 
     const vec3 tDelta = vec3(
@@ -252,21 +245,31 @@ bool sceneIntersect(Ray ray, out Hit hit)
         ray.direction.y == 0.0 ? 1e30 : (nextBoundary.y - ray.origin.y) / ray.direction.y,
         ray.direction.z == 0.0 ? 1e30 : (nextBoundary.z - ray.origin.z) / ray.direction.z);
 
-    const int resolution = chunkResolution();
-    const ivec3 sceneMinVoxel = pc.chunkGridOrigin.xyz * resolution;
-    const ivec3 sceneMaxVoxel =
-        sceneMinVoxel +
-        ivec3(pc.chunkGridSize.x, pc.chunkGridSize.y, pc.chunkGridSize.z) * resolution;
+    const int resolutionSquared = resolution * resolution;
+    const ivec3 sceneMinChunk = pc.chunkGridOrigin.xyz;
+    const ivec3 sceneMaxChunk =
+        sceneMinChunk + ivec3(pc.chunkGridSize.x, pc.chunkGridSize.y, pc.chunkGridSize.z);
+    uint currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+    uint currentVoxelOffset =
+        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
 
-    for (int stepIndex = 0; stepIndex < kMaxDdaSteps; ++stepIndex) {
+    const int maxDdaSteps = int(max(pc.settings.w, 1u));
+    for (int stepIndex = 0; stepIndex < maxDdaSteps; ++stepIndex) {
         const bool outsideScene =
-            any(lessThan(voxelCoord, sceneMinVoxel)) ||
-            any(greaterThanEqual(voxelCoord, sceneMaxVoxel));
+            any(lessThan(chunkCoord, sceneMinChunk)) ||
+            any(greaterThanEqual(chunkCoord, sceneMaxChunk));
         if (outsideScene) {
             return false;
         }
 
-        const uint materialId = sampleVoxelMaterial(voxelCoord);
+        uint materialId = kMaterialAir;
+        if (currentChunkIndexPlusOne != 0u) {
+            const uint linearIndex =
+                uint(localCoord.x) +
+                uint(localCoord.y) * uint(resolution) +
+                uint(localCoord.z) * uint(resolutionSquared);
+            materialId = voxelMaterials[currentVoxelOffset + linearIndex];
+        }
         if (materialId != kMaterialAir) {
             hit.found = true;
             hit.t = currentT;
@@ -279,11 +282,39 @@ bool sceneIntersect(Ray ray, out Hit hit)
         if (tMax.x < tMax.y) {
             if (tMax.x < tMax.z) {
                 voxelCoord.x += stepDir.x;
+                localCoord.x += stepDir.x;
+                if (localCoord.x < 0) {
+                    localCoord.x += resolution;
+                    chunkCoord.x -= 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                } else if (localCoord.x >= resolution) {
+                    localCoord.x -= resolution;
+                    chunkCoord.x += 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                }
                 currentT = tMax.x;
                 tMax.x += tDelta.x;
                 currentNormal = vec3(float(-stepDir.x), 0.0, 0.0);
             } else {
                 voxelCoord.z += stepDir.z;
+                localCoord.z += stepDir.z;
+                if (localCoord.z < 0) {
+                    localCoord.z += resolution;
+                    chunkCoord.z -= 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                } else if (localCoord.z >= resolution) {
+                    localCoord.z -= resolution;
+                    chunkCoord.z += 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                }
                 currentT = tMax.z;
                 tMax.z += tDelta.z;
                 currentNormal = vec3(0.0, 0.0, float(-stepDir.z));
@@ -291,11 +322,39 @@ bool sceneIntersect(Ray ray, out Hit hit)
         } else {
             if (tMax.y < tMax.z) {
                 voxelCoord.y += stepDir.y;
+                localCoord.y += stepDir.y;
+                if (localCoord.y < 0) {
+                    localCoord.y += resolution;
+                    chunkCoord.y -= 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                } else if (localCoord.y >= resolution) {
+                    localCoord.y -= resolution;
+                    chunkCoord.y += 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                }
                 currentT = tMax.y;
                 tMax.y += tDelta.y;
                 currentNormal = vec3(0.0, float(-stepDir.y), 0.0);
             } else {
                 voxelCoord.z += stepDir.z;
+                localCoord.z += stepDir.z;
+                if (localCoord.z < 0) {
+                    localCoord.z += resolution;
+                    chunkCoord.z -= 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                } else if (localCoord.z >= resolution) {
+                    localCoord.z -= resolution;
+                    chunkCoord.z += 1;
+                    currentChunkIndexPlusOne = lookupChunkIndex(chunkCoord);
+                    currentVoxelOffset =
+                        currentChunkIndexPlusOne != 0u ? chunks[currentChunkIndexPlusOne - 1u].offsets.x : 0u;
+                }
                 currentT = tMax.z;
                 tMax.z += tDelta.z;
                 currentNormal = vec3(0.0, 0.0, float(-stepDir.z));

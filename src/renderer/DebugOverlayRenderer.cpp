@@ -3,6 +3,9 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <iterator>
+
 namespace Meridian {
 
 bool DebugOverlayRenderer::init(VulkanContext& context)
@@ -50,12 +53,54 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         m_renderStateSnapshot.camera.position[1],
         m_renderStateSnapshot.camera.position[2]);
 
+    if (m_getUpdateRateLimit && m_setUpdateRateLimit) {
+        float updateRateLimit = m_getUpdateRateLimit();
+        if (ImGui::SliderFloat("UPS Limit", &updateRateLimit, 30.0F, 1000.0F, "%.0f")) {
+            m_setUpdateRateLimit(updateRateLimit);
+        }
+    }
+
     bool vsyncEnabled = m_context->isVSyncEnabled();
     if (ImGui::Checkbox("VSync", &vsyncEnabled)) {
         m_context->setVSyncEnabled(vsyncEnabled);
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(%s)", m_context->getPresentModeName());
+
+    if (m_context->supportsFragmentShadingRate()) {
+        const std::span<const std::uint32_t> supportedRates =
+            m_context->supportedFragmentShadingRates();
+        if (!supportedRates.empty()) {
+            std::size_t selectedRateIndex = 0;
+            const auto selectedRate = std::find(
+                supportedRates.begin(),
+                supportedRates.end(),
+                m_context->fragmentShadingRateTexelSize());
+            if (selectedRate != supportedRates.end()) {
+                selectedRateIndex = static_cast<std::size_t>(
+                    std::distance(supportedRates.begin(), selectedRate));
+            }
+
+            int shadingRateIndex = static_cast<int>(selectedRateIndex);
+            if (ImGui::SliderInt(
+                    "Fragment Shading Rate",
+                    &shadingRateIndex,
+                    0,
+                    static_cast<int>(supportedRates.size()) - 1,
+                    "%d")) {
+                m_context->setFragmentShadingRateTexelSize(
+                    supportedRates[static_cast<std::size_t>(shadingRateIndex)]);
+            }
+            ImGui::SameLine();
+            ImGui::Text(
+                "%ux%u",
+                supportedRates[static_cast<std::size_t>(shadingRateIndex)],
+                supportedRates[static_cast<std::size_t>(shadingRateIndex)]);
+        }
+    } else {
+        ImGui::TextDisabled("Fragment Shading Rate: unsupported");
+    }
+
     ImGui::Separator();
     ImGui::TextUnformatted("Detailed profiling is emitted to Tracy.");
 

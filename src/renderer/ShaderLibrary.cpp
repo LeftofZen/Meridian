@@ -5,6 +5,25 @@
 #include <cstdint>
 #include <fstream>
 
+namespace {
+
+void setShaderModuleDebugName(VkDevice device, VkShaderModule module, std::string_view name) noexcept
+{
+    if (device == VK_NULL_HANDLE || module == VK_NULL_HANDLE || name.empty() ||
+        vkSetDebugUtilsObjectNameEXT == nullptr) {
+        return;
+    }
+
+    VkDebugUtilsObjectNameInfoEXT nameInfo{};
+    nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    nameInfo.objectType = VK_OBJECT_TYPE_SHADER_MODULE;
+    nameInfo.objectHandle = reinterpret_cast<std::uint64_t>(module);
+    nameInfo.pObjectName = name.data();
+    vkSetDebugUtilsObjectNameEXT(device, &nameInfo);
+}
+
+} // namespace
+
 namespace Meridian {
 
 ShaderLibrary::ShaderLibrary(VkDevice device) noexcept : m_device(device) {}
@@ -40,6 +59,8 @@ VkShaderModule ShaderLibrary::loadModule(
             path.string());
         return VK_NULL_HANDLE;
     }
+
+    setShaderModuleDebugName(m_device, module, name);
 
     m_modules.emplace(std::string{name}, module);
     return module;

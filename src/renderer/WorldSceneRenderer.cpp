@@ -62,11 +62,27 @@ void WorldSceneRenderer::beginFrame()
         m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks = renderDistanceChunks;
     }
 
+    float generationDistanceChunks =
+        m_renderStateSnapshot.worldRenderSettings.chunkGenerationDistanceChunks;
+    if (ImGui::SliderFloat(
+            "Chunk Generation Distance (chunks)",
+            &generationDistanceChunks,
+            1.0F,
+            32.0F,
+            "%.1f")) {
+        m_renderStateStore->setWorldChunkGenerationDistanceChunks(generationDistanceChunks);
+        m_renderStateSnapshot.worldRenderSettings.chunkGenerationDistanceChunks =
+            generationDistanceChunks;
+    }
+
     ImGui::Text(
         "Approx render radius: %.0f m",
         m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks * 32.0F);
+    ImGui::Text(
+        "Approx generation radius: %.0f m",
+        m_renderStateSnapshot.worldRenderSettings.chunkGenerationDistanceChunks * 32.0F);
     ImGui::TextWrapped(
-        "This distance now drives both path-traced chunk visibility and world chunk generation around the camera. Higher values will stream and keep more terrain resident.");
+        "Render distance controls path-traced visibility. Chunk generation distance controls how far terrain stays resident and gets streamed from cache or generated around the camera.");
     ImGui::End();
 }
 

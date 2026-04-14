@@ -182,6 +182,11 @@ void RenderFramePipeline::recordFrame(VkCommandBuffer commandBuffer)
     }
 
     ZoneScopedN("RenderFramePipeline::recordFrame");
+    const TracyVkCtx tracyVkContext = m_context != nullptr ? m_context->tracyVkContext() : nullptr;
+
+    if (tracyVkContext != nullptr) {
+        TracyVkZone(tracyVkContext, commandBuffer, "Render Frontend");
+    }
 
     {
         ZoneScopedN("ImGui::Render");
@@ -193,12 +198,18 @@ void RenderFramePipeline::recordFrame(VkCommandBuffer commandBuffer)
             ZoneScopedN("IRenderFeature::recordFrame");
             const char* featureName = feature->name();
             ZoneName(featureName, std::strlen(featureName));
+            if (tracyVkContext != nullptr) {
+                TracyVkZone(tracyVkContext, commandBuffer, "Render Feature");
+            }
             feature->recordFrame(commandBuffer);
         }
     }
 
     {
         ZoneScopedN("ImGui Draw Data");
+        if (tracyVkContext != nullptr) {
+            TracyVkZone(tracyVkContext, commandBuffer, "ImGui Draw Data");
+        }
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
     }
 }

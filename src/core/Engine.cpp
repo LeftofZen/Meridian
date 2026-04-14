@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <tracy/Tracy.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <string_view>
@@ -25,6 +26,11 @@ constexpr std::array<std::string_view, 10> kSystemNames{
 };
 
 } // namespace
+
+void Engine::setUpdateRateLimit(float updatesPerSecond) noexcept
+{
+    m_updateRateLimit = std::clamp(updatesPerSecond, 1.0F, 1000.0F);
+}
 
 void Engine::startRenderLoop()
 {
@@ -66,6 +72,34 @@ void Engine::stopRenderLoop()
     m_renderLoopRunning.store(false, std::memory_order_release);
     if (m_renderThread.joinable()) {
         m_renderThread.join();
+    }
+}
+
+void Engine::limitUpdateRate(std::uint64_t frameStartCounter, float performanceFrequency) const
+{
+    if (m_updateRateLimit <= 0.0F) {
+        return;
+    }
+
+    ZoneScopedN("Engine::limitUpdateRate");
+    const double targetFrameSeconds = 1.0 / static_cast<double>(m_updateRateLimit);
+
+    for (;;) {
+        const Uint64 currentCounter = SDL_GetPerformanceCounter();
+        const double elapsedSeconds =
+            static_cast<double>(currentCounter - frameStartCounter) /
+            static_cast<double>(performanceFrequency);
+        const double remainingSeconds = targetFrameSeconds - elapsedSeconds;
+        if (remainingSeconds <= 0.0) {
+            return;
+        }
+
+        if (remainingSeconds > 0.0015) {
+            std::this_thread::sleep_for(
+                std::chrono::duration<double>(remainingSeconds - 0.0005));
+        } else {
+            std::this_thread::yield();
+        }
     }
 }
 
@@ -122,6 +156,13 @@ bool Engine::init()
     m_pathTracerRenderer->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setPathTracerSettings(m_pathTracerRenderer->settings());
+    m_debugOverlay->setUpdateRateLimitCallbacks(
+        [this]() {
+            return updateRateLimit();
+        },
+        [this](float updatesPerSecond) {
+            setUpdateRateLimit(updatesPerSecond);
+        });
     m_worldSceneRenderer->setRenderStateStore(m_renderStateStore);
     m_renderPipeline->addFeature(*m_pathTracerRenderer);
     m_renderPipeline->addFeature(*m_worldSceneRenderer);
@@ -191,7 +232,9 @@ bool Engine::init()
         return false;
     }
     if (m_freeCameraController) {
-        m_world->setStreamingDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
+        m_world->setRenderDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
+        m_world->setChunkGenerationDistanceChunks(
+            m_renderStateStore.worldChunkGenerationDistanceChunks());
         m_world->setStreamingCamera(m_freeCameraController->cameraState());
     }
     m_debugOverlay->setTerrainSettingsCallbacks(
@@ -249,7 +292,10 @@ void Engine::run()
                     ZoneName(systemName.data(), systemName.size());
                     system->update(deltaTimeSeconds);
                     if (system == m_freeCameraController.get() && m_world != nullptr) {
-                        m_world->setStreamingDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
+                        m_world->setRenderDistanceChunks(
+                            m_renderStateStore.worldRenderDistanceChunks());
+                        m_world->setChunkGenerationDistanceChunks(
+                            m_renderStateStore.worldChunkGenerationDistanceChunks());
                         m_world->setStreamingCamera(m_freeCameraController->cameraState());
                     }
                 }
@@ -286,6 +332,7 @@ void Engine::run()
         }
 
         FrameMarkNamed("Update");
+        limitUpdateRate(currentCounter, performanceFrequency);
     }
 
     stopRenderLoop();
