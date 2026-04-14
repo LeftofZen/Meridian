@@ -41,4 +41,11 @@ void AudioSystem::shutdown()
     m_initialised = false;
 }
 
+void AudioSystem::update(float /*deltaTimeSeconds*/)
+{
+    if (!m_initialised) {
+        return;
+    }
+}
+
 } // namespace Meridian

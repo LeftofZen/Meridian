@@ -29,9 +29,37 @@ The Clang preset is portable on purpose: it does not hardcode local install path
 
 This writes generated files to the local `build/` directory, which is ignored by Git.
 
+## Profiling
+
+Detailed runtime profiling now uses Tracy instead of the in-engine timing tables. Run Meridian with a Tracy viewer connected to inspect per-frame update, render, Vulkan, and render-feature zones.
+
+In VS Code, use the `Run Meridian + Tracy` launch compound to build, open the Tracy viewer, and start Meridian together. If you only need the viewer, run the `Open Tracy Profiler (VS 2026)` task. Both prompt for the Tracy viewer path so you can point them at a local Tracy viewer install.
+
+RenderDoc shader debugging is supported in the normal debug build. Meridian now compiles GLSL shaders to SPIR-V with embedded debug information and assigns Vulkan debug names to the main swapchain, pipeline, buffer, and synchronization objects when `VK_EXT_debug_utils` is available. That gives RenderDoc readable capture object names and source-level shader mapping.
+
+For RenderDoc captures, launch [build/vs2026-debug/Debug/Meridian.exe](build/vs2026-debug/Debug/Meridian.exe) from RenderDoc or inject into a running debug build. If RenderDoc cannot show source-level shader information, rebuild once to regenerate the `.spv` files with current sources before taking the capture.
+
+All future runtime-facing work should add or update Tracy coverage as part of the implementation, rather than relying on ad hoc timing code.
+
+- Tracy github: https://github.com/wolfpld/tracy
+- Tracy documentation/manual: https://github.com/wolfpld/tracy/releases/latest/download/tracy.pdf
+
 ## Architecture Guide
 
 This document outlines the core data structures and acceleration strategies for implementing a high-performance path tracer within a procedural, infinite, and simulation-heavy environment.
+
+### Voxel Data Design References
+
+- Runevision, "Fast and Gorgeous Erosion Filter": heightfield generation reference for large-scale terrain shape.
+- John Lin, "The Perfect Voxel Engine": data-oriented reference for keeping a common raw voxel volume, converting to task-specific formats, and avoiding one-format-fits-all voxel architecture.
+
+### Rendering Architecture Rules
+
+- Keep the rendering core/engine backend separate from frontend or game-level graphics responsibilities.
+- Treat Vulkan/device/swapchain/frame execution as core renderer concerns.
+- Treat scene presentation, debug UI, ImGui windows, and other game-facing visuals as frontend features layered on top of the backend.
+- Prefer a modular, idiomatic frame pipeline that composes multiple rendering features rather than growing a single monolithic renderer class.
+- New rendering work should extend the pipeline through focused feature modules before adding responsibilities to the core backend.
 
 ### 1. High-Level Architecture: Two-Level Acceleration
 
@@ -43,15 +71,23 @@ To handle dynamic entities (NPCs, players) alongside a dynamic world, we utilize
 
 ### 2. Terrain Data: Sparse Voxel Octree (SVO)
 
-Traditional meshes are unsuitable for infinite, editable terrain. We use an **SVO** to represent the world. The world heightmap is procedurally generated in chunks using the methods outlined in this blog post: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
+Traditional meshes are unsuitable for infinite, editable terrain. Meridian treats the world as an infinite 3D grid of cubic chunks, where each chunk is an $N^3$ voxel volume and $N$ is a power of two. The default is $N = 32$. Terrain generation can still start from a heightfield, but chunks themselves are volumetric and not height-bounded objects.
+
+The current terrain bootstrap uses a heightfield as source data, following Runevision's erosion work: https://blog.runevision.com/2026/03/fast-and-gorgeous-erosion-filter.html?m=1.
+
+Meridian's terrain compute path now ports the actual Buffer A generation logic from Runevision's advanced terrain erosion shader rather than a simplified approximation. That includes derivative noise for the base height field, Phacelle noise, the full erosion filter with assumed-slope control, pointy-peak gully weighting, stacked fading, separate ridge and crease rounding, and ridge-map generation alongside the final height output.
+
+The broader chunk-data pipeline follows John Lin's argument that voxel engines should preserve a common raw format and convert into specialized structures as needed rather than forcing all systems onto one representation: https://voxely.net/blog/the-perfect-voxel-engine/.
 
 - **Efficiency:** O(\log n) traversal using a **Digital Differential Analyzer (DDA)** algorithm.
-- **Editability:** Real-time "digging" or "building" only requires updating local leaf nodes and propagating values upward.
+- **Chunk Model:** Chunk storage is cubic voxel data first; the per-chunk SVO is a derived acceleration structure for traversal.
+- **Editability:** Real-time "digging" or "building" only requires updating local chunk voxels and propagating changes into derived structures.
 - **LOD:** The tree depth inherently provides Levels of Detail; distant rays can stop at higher-level nodes to save cycles.
+- **Format Conversion:** Different systems are free to consume different derived voxel formats when needed, instead of baking gameplay, rendering, persistence, and simulation into one monolithic storage layout.
 
 ### 3. Global Management: Spatial Hash Grid
 
-For an infinite world, we manage memory through a **Spatial Hash Grid** that stores active chunks.
+For an infinite world, we manage memory through a **Spatial Hash Grid** that stores active chunks in all directions.
 
 - **Key:** Chunk Coordinates (e.g., x, y, z hashed to a uint64).
 - **Value:** Pointer to a local SVO/BLAS.

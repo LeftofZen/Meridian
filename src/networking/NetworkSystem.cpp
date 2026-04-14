@@ -41,4 +41,11 @@ void NetworkSystem::shutdown()
     }
 }
 
+void NetworkSystem::update(float /*deltaTimeSeconds*/)
+{
+    if (!m_initialized) {
+        return;
+    }
+}
+
 } // namespace Meridian

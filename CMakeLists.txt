@@ -37,22 +37,79 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(flatbuffers CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(Tracy CONFIG REQUIRED)
 find_package(unofficial-lua CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
 find_package(RecastNavigation CONFIG REQUIRED)
 find_package(Taskflow CONFIG REQUIRED)
 
+find_program(GLSLANG_VALIDATOR NAMES glslangValidator HINTS
+    ENV VULKAN_SDK
+    PATH_SUFFIXES Bin)
+
+if (NOT GLSLANG_VALIDATOR)
+    message(FATAL_ERROR "glslangValidator was not found. Install the Vulkan SDK or add glslangValidator to PATH.")
+endif()
+
 add_executable(Meridian)
+
+set(MERIDIAN_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+file(TO_CMAKE_PATH "${MERIDIAN_SHADER_OUTPUT_DIR}" MERIDIAN_SHADER_OUTPUT_DIR_CMAKE)
+
+set(MERIDIAN_SHADER_SOURCES
+    shaders/fullscreen_triangle.vert
+    shaders/basic_pathtracer.frag
+    shaders/terrain_heightmap.comp
+)
+
+set(MERIDIAN_SHADER_COMPILE_FLAGS
+    -V
+    --target-env
+    vulkan1.3
+    -g
+)
+
+set(MERIDIAN_SHADER_OUTPUTS)
+foreach(MERIDIAN_SHADER_SOURCE IN LISTS MERIDIAN_SHADER_SOURCES)
+    get_filename_component(MERIDIAN_SHADER_NAME "${MERIDIAN_SHADER_SOURCE}" NAME)
+    set(MERIDIAN_SHADER_OUTPUT "${MERIDIAN_SHADER_OUTPUT_DIR}/${MERIDIAN_SHADER_NAME}.spv")
+
+    add_custom_command(
+        OUTPUT "${MERIDIAN_SHADER_OUTPUT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MERIDIAN_SHADER_OUTPUT_DIR}"
+        COMMAND ${GLSLANG_VALIDATOR} ${MERIDIAN_SHADER_COMPILE_FLAGS} -o "${MERIDIAN_SHADER_OUTPUT}" "${CMAKE_CURRENT_SOURCE_DIR}/${MERIDIAN_SHADER_SOURCE}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${MERIDIAN_SHADER_SOURCE}"
+        VERBATIM)
+
+    list(APPEND MERIDIAN_SHADER_OUTPUTS "${MERIDIAN_SHADER_OUTPUT}")
+endforeach()
+
+add_custom_target(MeridianShaders ALL DEPENDS ${MERIDIAN_SHADER_OUTPUTS})
+add_dependencies(Meridian MeridianShaders)
 
 target_sources(Meridian PRIVATE
     src/main.cpp
     src/core/Engine.cpp
+    src/input/InputManager.cpp
     src/window/Window.cpp
+    src/renderer/DebugOverlayRenderer.cpp
+    src/renderer/FreeCameraController.cpp
+    src/renderer/PathTracerRenderer.cpp
+    src/renderer/RenderFramePipeline.cpp
+    src/renderer/ShaderLibrary.cpp
     src/renderer/VulkanContext.cpp
+    src/renderer/WorldSceneRenderer.cpp
     src/audio/AudioSystem.cpp
     src/physics/PhysicsSystem.cpp
     src/networking/NetworkSystem.cpp
     src/scripting/ScriptingSystem.cpp
+    src/world/ChunkGenerationVisibility.cpp
+    src/world/WorldChunkManager.cpp
+    src/world/WorldChunkDatabase.cpp
+    src/world/SparseVoxelOctree.cpp
+    src/world/TerrainHeightmapGenerator.cpp
+    src/world/WorldChunkStorage.cpp
+    src/world/WorldSpatialHashGrid.cpp
     src/world/World.cpp
 )
 
@@ -73,20 +130,94 @@ target_link_libraries(Meridian PRIVATE
     spdlog::spdlog
     flatbuffers::flatbuffers
     zstd::libzstd
-    imgui::imgui
+    Tracy::TracyClient
     unofficial::lua::lua
     sol2::sol2
     RecastNavigation::Recast
     RecastNavigation::Detour
     Taskflow::Taskflow
+    imgui::imgui
 )
+
+if (WIN32)
+    add_custom_command(TARGET Meridian POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:Meridian>
+            $<TARGET_FILE_DIR:Meridian>
+        COMMAND_EXPAND_LISTS
+    )
+
+    get_target_property(MERIDIAN_TRACY_DLL_DEBUG Tracy::TracyClient IMPORTED_LOCATION_DEBUG)
+    get_target_property(MERIDIAN_TRACY_DLL_RELEASE Tracy::TracyClient IMPORTED_LOCATION_RELEASE)
+
+    set(MERIDIAN_TRACY_DEBUG_OUTPUT "")
+    set(MERIDIAN_TRACY_RELEASE_OUTPUT "")
+    set(MERIDIAN_TRACY_MINSIZEREL_OUTPUT "")
+    set(MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT "")
+
+    if (MERIDIAN_TRACY_DLL_DEBUG)
+        set(MERIDIAN_TRACY_DEBUG_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/Debug/TracyClient.dll")
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_DEBUG_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_DEBUG}"
+                "${CMAKE_CURRENT_BINARY_DIR}/Debug"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_DEBUG}"
+            VERBATIM
+        )
+    endif()
+
+    if (MERIDIAN_TRACY_DLL_RELEASE)
+        set(MERIDIAN_TRACY_RELEASE_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/Release/TracyClient.dll")
+        set(MERIDIAN_TRACY_MINSIZEREL_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MinSizeRel/TracyClient.dll")
+        set(MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/RelWithDebInfo/TracyClient.dll")
+
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_RELEASE_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_RELEASE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/Release"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_RELEASE}"
+            VERBATIM
+        )
+
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_MINSIZEREL_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_RELEASE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/MinSizeRel"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_RELEASE}"
+            VERBATIM
+        )
+
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_RELEASE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/RelWithDebInfo"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_RELEASE}"
+            VERBATIM
+        )
+    endif()
+
+    add_custom_target(MeridianRuntimeDeps ALL
+        DEPENDS
+            "$<$<CONFIG:Debug>:${MERIDIAN_TRACY_DEBUG_OUTPUT}>"
+            "$<$<CONFIG:Release>:${MERIDIAN_TRACY_RELEASE_OUTPUT}>"
+            "$<$<CONFIG:MinSizeRel>:${MERIDIAN_TRACY_MINSIZEREL_OUTPUT}>"
+            "$<$<CONFIG:RelWithDebInfo>:${MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT}>"
+    )
+endif()
 
 if (MSVC)
     target_compile_options(Meridian PRIVATE /W4 /permissive-)
 endif()
 
 target_compile_definitions(Meridian PRIVATE
+    IMGUI_IMPL_VULKAN_USE_VOLK=1
+    MERIDIAN_SHADER_OUTPUT_DIR="${MERIDIAN_SHADER_OUTPUT_DIR_CMAKE}"
     SOL_ALL_SAFETIES_ON=1
+    TRACY_ENABLE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )

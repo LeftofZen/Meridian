@@ -30,6 +30,27 @@
         }
       },
       "problemMatcher": ["$msCompile"]
+    },
+    {
+      "label": "Open Tracy Profiler (VS 2026)",
+      "type": "shell",
+      "command": "if not exist \"${input:tracyProfilerPath}\" (echo tracy-profiler.exe was not found at the selected path. Update the path prompt to point at your Tracy viewer executable. && exit /b 1) && start \"Tracy Profiler\" \"${input:tracyProfilerPath}\"",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "C:\\Windows\\System32\\cmd.exe",
+          "args": ["/d", "/c"]
+        }
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "tracyProfilerPath",
+      "type": "promptString",
+      "description": "Path to the Tracy viewer executable",
+      "default": "${workspaceFolder}\\build\\vs2026-debug\\vcpkg_installed\\x64-windows\\tools\\tracy\\tracy-profiler.exe"
     }
   ]
 }

@@ -1,7 +1,10 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <SDL3/SDL.h>
 
+#include <functional>
 #include <string>
 
 namespace Meridian {
@@ -12,7 +15,7 @@ struct WindowConfig {
     int height{720};
 };
 
-class Window {
+class Window final : public ISystem {
 public:
     explicit Window(const WindowConfig& config);
     ~Window();
@@ -29,13 +32,16 @@ public:
     [[nodiscard]] bool shouldClose() const noexcept { return m_shouldClose; }
     [[nodiscard]] int getWidth() const noexcept { return m_config.width; }
     [[nodiscard]] int getHeight() const noexcept { return m_config.height; }
+    void setEventHandler(std::function<void(const SDL_Event&)> eventHandler);
 
+    void update(float deltaTimeSeconds) override;
     void processEvents();
 
 private:
     WindowConfig m_config;
     SDL_Window* m_window{nullptr};
     bool m_shouldClose{false};
+    std::function<void(const SDL_Event&)> m_eventHandler;
 };
 
 } // namespace Meridian

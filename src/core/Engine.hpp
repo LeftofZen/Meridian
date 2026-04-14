@@ -3,15 +3,28 @@
 #include "audio/AudioSystem.hpp"
 #include "core/Logger.hpp"
 #include "ecs/ECSSystem.hpp"
+#include "input/InputManager.hpp"
 #include "networking/NetworkSystem.hpp"
 #include "physics/PhysicsSystem.hpp"
+#include "renderer/DebugOverlayRenderer.hpp"
+#include "renderer/FreeCameraController.hpp"
+#include "renderer/PathTracerRenderer.hpp"
+#include "renderer/RenderFramePipeline.hpp"
+#include "renderer/RenderStateStore.hpp"
 #include "renderer/VulkanContext.hpp"
+#include "renderer/WorldSceneRenderer.hpp"
 #include "scripting/ScriptingSystem.hpp"
 #include "tasks/TaskSystem.hpp"
 #include "window/Window.hpp"
 #include "world/World.hpp"
 
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <limits>
 #include <memory>
+#include <thread>
 
 namespace Meridian {
 
@@ -44,10 +57,22 @@ public:
     [[nodiscard]] ScriptingSystem& getScripting() noexcept { return *m_scripting; }
     [[nodiscard]] TaskSystem& getTasks() noexcept { return *m_tasks; }
     [[nodiscard]] World& getWorld() noexcept { return *m_world; }
+    void setUpdateRateLimit(float updatesPerSecond) noexcept;
+    [[nodiscard]] float updateRateLimit() const noexcept { return m_updateRateLimit; }
 
 private:
+    void startRenderLoop();
+    void stopRenderLoop();
+    void limitUpdateRate(std::uint64_t frameStartCounter, float performanceFrequency) const;
+
     std::unique_ptr<Window> m_window;
+    std::unique_ptr<InputManager> m_inputManager;
     std::unique_ptr<VulkanContext> m_vulkan;
+    std::unique_ptr<RenderFramePipeline> m_renderPipeline;
+    std::unique_ptr<FreeCameraController> m_freeCameraController;
+    std::unique_ptr<PathTracerRenderer> m_pathTracerRenderer;
+    std::unique_ptr<DebugOverlayRenderer> m_debugOverlay;
+    std::unique_ptr<WorldSceneRenderer> m_worldSceneRenderer;
     std::unique_ptr<AudioSystem> m_audio;
     std::unique_ptr<PhysicsSystem> m_physics;
     std::unique_ptr<ECSSystem> m_ecs;
@@ -55,6 +80,11 @@ private:
     std::unique_ptr<ScriptingSystem> m_scripting;
     std::unique_ptr<TaskSystem> m_tasks;
     std::unique_ptr<World> m_world;
+    RenderStateStore m_renderStateStore;
+    std::uint64_t m_cachedWorldRenderRevision{std::numeric_limits<std::uint64_t>::max()};
+    float m_updateRateLimit{200.0F};
+    std::atomic<bool> m_renderLoopRunning{false};
+    std::thread m_renderThread;
 };
 
 } // namespace Meridian

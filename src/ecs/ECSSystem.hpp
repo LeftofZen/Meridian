@@ -1,10 +1,12 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <entt/entt.hpp>
 
 namespace Meridian {
 
-class ECSSystem {
+class ECSSystem final : public ISystem {
 public:
     ECSSystem() = default;
     ~ECSSystem() = default;
@@ -17,6 +19,8 @@ public:
     [[nodiscard]] bool init() { return true; }
 
     void shutdown() { m_registry.clear(); }
+
+    void update(float /*deltaTimeSeconds*/) override {}
 
     [[nodiscard]] entt::registry& getRegistry() noexcept { return m_registry; }
     [[nodiscard]] const entt::registry& getRegistry() const noexcept { return m_registry; }

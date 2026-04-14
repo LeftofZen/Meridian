@@ -45,10 +45,28 @@ void Window::shutdown()
     }
 }
 
+void Window::update(float /*deltaTimeSeconds*/)
+{
+    if (!m_window) {
+        return;
+    }
+
+    processEvents();
+}
+
+void Window::setEventHandler(std::function<void(const SDL_Event&)> eventHandler)
+{
+    m_eventHandler = std::move(eventHandler);
+}
+
 void Window::processEvents()
 {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (m_eventHandler) {
+            m_eventHandler(event);
+        }
+
         switch (event.type) {
             case SDL_EVENT_QUIT:
                 m_shouldClose = true;

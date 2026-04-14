@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/ISystem.hpp"
+
 #include <phonon.h>
 
 namespace Meridian {
@@ -9,7 +11,7 @@ struct AudioConfig {
     int frameSize{512};
 };
 
-class AudioSystem {
+class AudioSystem final : public ISystem {
 public:
     explicit AudioSystem(const AudioConfig& config = {});
     ~AudioSystem();
@@ -21,6 +23,7 @@ public:
 
     [[nodiscard]] bool init();
     void shutdown();
+    void update(float deltaTimeSeconds) override;
 
     [[nodiscard]] IPLContext getContext() const noexcept { return m_context; }
     [[nodiscard]] const IPLAudioSettings& getAudioSettings() const noexcept
