@@ -4,8 +4,14 @@
 
 #include <taskflow/taskflow.hpp>
 
+#include <tracy/Tracy.hpp>
+
+#include <functional>
 #include <future>
 #include <memory>
+#include <sstream>
+#include <string>
+#include <thread>
 #include <stdexcept>
 #include <type_traits>
 
@@ -23,6 +29,7 @@ public:
 
     [[nodiscard]] bool init()
     {
+        ZoneScopedN("TaskSystem::init");
         m_executor = std::make_unique<tf::Executor>();
         m_initialized = (m_executor != nullptr);
         return m_initialized;
@@ -30,6 +37,7 @@ public:
 
     void shutdown()
     {
+        ZoneScopedN("TaskSystem::shutdown");
         if (m_executor) {
             m_executor->wait_for_all();
             m_executor.reset();
@@ -53,6 +61,7 @@ public:
     void run(tf::Taskflow& flow)
     {
         ensureInitialised();
+        ZoneScopedN("TaskSystem::run");
         m_executor->run(flow).wait();
     }
 
@@ -61,7 +70,27 @@ public:
         -> std::future<std::invoke_result_t<std::decay_t<F>>>
     {
         ensureInitialised();
-        return m_executor->async(std::forward<F>(task));
+
+        using Task = std::decay_t<F>;
+        using Result = std::invoke_result_t<Task>;
+
+        return m_executor->async([task = Task(std::forward<F>(task))]() mutable -> Result {
+            thread_local std::string workerThreadName;
+            if (workerThreadName.empty()) {
+                std::ostringstream stream;
+                stream << "Task Worker " << std::this_thread::get_id();
+                workerThreadName = stream.str();
+                tracy::SetThreadName(workerThreadName.c_str());
+            }
+
+            ZoneScopedN("TaskSystem::async");
+            if constexpr (std::is_void_v<Result>) {
+                std::invoke(task);
+                return;
+            } else {
+                return std::invoke(task);
+            }
+        });
     }
 
     [[nodiscard]] bool isInitialised() const noexcept { return m_initialized; }

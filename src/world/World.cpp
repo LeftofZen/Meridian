@@ -5,6 +5,8 @@
 
 #include "tasks/TaskSystem.hpp"
 
+#include <tracy/Tracy.hpp>
+
 namespace Meridian {
 
 World::~World()
@@ -71,6 +73,7 @@ void World::update(float deltaTimeSeconds)
         return;
     }
 
+    ZoneScopedN("World::update");
     applyPendingTerrainSettings();
     m_chunkManager->update(deltaTimeSeconds);
 }
@@ -136,6 +139,7 @@ void World::applyPendingTerrainSettings()
         return;
     }
 
+    ZoneScopedN("World::applyPendingTerrainSettings");
     std::optional<TerrainHeightmapSettings> pendingSettings;
     {
         std::scoped_lock lock(m_terrainSettingsMutex);

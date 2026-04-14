@@ -71,10 +71,12 @@ private:
     void dispatchChunkJobs();
     void collectCompletedJobs();
     void pruneChunksOutsideRetention();
+    void cacheResidentChunkRenderData(const WorldChunkStorage& chunkStorage);
     [[nodiscard]] bool shouldKeepChunk(ChunkCoord coord) const noexcept;
     [[nodiscard]] bool shouldRequestChunk(ChunkCoord coord) const noexcept;
     [[nodiscard]] int streamRadiusXZ() const noexcept;
     [[nodiscard]] int retentionRadiusXZ() const noexcept;
+    [[nodiscard]] static WorldChunkRenderData createRenderData(const WorldChunkStorage& chunkStorage);
 
     [[nodiscard]] static GeneratedChunk generateChunk(
         ChunkCoord coord,
@@ -105,6 +107,7 @@ private:
     std::vector<ChunkJob> m_inFlightJobs;
     std::unordered_map<ChunkKey, ChunkRecord> m_chunkRecords;
     std::unordered_map<ChunkKey, TerrainHeightmapTile> m_heightmapTiles;
+    std::unordered_map<ChunkKey, WorldChunkRenderData> m_renderChunkData;
     WorldSpatialHashGrid m_residentChunks;
     std::uint64_t m_renderRevision{0};
 };

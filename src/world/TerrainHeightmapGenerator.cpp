@@ -8,6 +8,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include <tracy/Tracy.hpp>
+
 namespace Meridian {
 
 namespace {
@@ -127,13 +129,17 @@ void TerrainHeightmapGenerator::shutdown() noexcept
 
 TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
 {
+    ZoneScopedN("TerrainHeightmapGenerator::generateTile");
     std::scoped_lock lock(m_mutex);
 
     const ChunkCoord tileCoord{.x = coord.x, .y = 0, .z = coord.z};
     const ChunkKey key = tileKey(tileCoord);
     if (const auto existing = m_tileCache.find(key); existing != m_tileCache.end()) {
+        ZoneText("cache-hit", 9);
         return existing->second;
     }
+
+    ZoneText("cache-miss", 10);
 
     TerrainHeightmapTile tile{
         .coord = tileCoord,
@@ -160,7 +166,10 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
     }
 
     const VkDevice device = m_context->getDevice();
-    vkWaitForFences(device, 1, &m_computeFence, VK_TRUE, UINT64_MAX);
+    {
+        ZoneScopedN("TerrainHeightmapGenerator::waitForFence");
+        vkWaitForFences(device, 1, &m_computeFence, VK_TRUE, UINT64_MAX);
+    }
     vkResetFences(device, 1, &m_computeFence);
     vkResetCommandPool(device, m_commandPool, 0);
 
@@ -240,7 +249,10 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
         &pushConstants);
 
     const std::uint32_t groupCount = (m_settings.tileResolution + 7U) / 8U;
-    vkCmdDispatch(m_commandBuffer, groupCount, groupCount, 1);
+    {
+        ZoneScopedN("TerrainHeightmapGenerator::dispatchCompute");
+        vkCmdDispatch(m_commandBuffer, groupCount, groupCount, 1);
+    }
 
     VkBufferMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -277,6 +289,7 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
     VkQueue queue = m_context->hasComputeSupport() ? m_context->getComputeQueue() :
                                                    m_context->getGraphicsQueue();
     {
+        ZoneScopedN("TerrainHeightmapGenerator::submitCompute");
         std::scoped_lock queueLock(m_context->getQueueSubmitMutex());
         if (vkQueueSubmit(queue, 1, &submitInfo, m_computeFence) != VK_SUCCESS) {
             MRD_ERROR("Failed to submit terrain heightmap compute work");
@@ -284,7 +297,10 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
         }
     }
 
-    vkWaitForFences(device, 1, &m_computeFence, VK_TRUE, UINT64_MAX);
+    {
+        ZoneScopedN("TerrainHeightmapGenerator::waitForComputeResult");
+        vkWaitForFences(device, 1, &m_computeFence, VK_TRUE, UINT64_MAX);
+    }
 
     void* mappedData = nullptr;
     if (vkMapMemory(device, m_outputBuffer.memory, 0, m_outputBuffer.size, 0, &mappedData) !=
@@ -293,12 +309,15 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
         return tile;
     }
 
-    const auto* outputSamples = static_cast<const TerrainOutputSample*>(mappedData);
-    for (std::size_t sampleIndex = 0; sampleIndex < tile.grayscale.size(); ++sampleIndex) {
-        tile.grayscale[sampleIndex] = outputSamples[sampleIndex].height;
-        tile.ridgeMap[sampleIndex] = outputSamples[sampleIndex].ridgeMap;
-        tile.erosion[sampleIndex] = outputSamples[sampleIndex].erosion;
-        tile.treeCoverage[sampleIndex] = outputSamples[sampleIndex].treeCoverage;
+    {
+        ZoneScopedN("TerrainHeightmapGenerator::readbackTile");
+        const auto* outputSamples = static_cast<const TerrainOutputSample*>(mappedData);
+        for (std::size_t sampleIndex = 0; sampleIndex < tile.grayscale.size(); ++sampleIndex) {
+            tile.grayscale[sampleIndex] = outputSamples[sampleIndex].height;
+            tile.ridgeMap[sampleIndex] = outputSamples[sampleIndex].ridgeMap;
+            tile.erosion[sampleIndex] = outputSamples[sampleIndex].erosion;
+            tile.treeCoverage[sampleIndex] = outputSamples[sampleIndex].treeCoverage;
+        }
     }
     vkUnmapMemory(device, m_outputBuffer.memory);
 

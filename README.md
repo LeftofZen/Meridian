@@ -29,6 +29,17 @@ The Clang preset is portable on purpose: it does not hardcode local install path
 
 This writes generated files to the local `build/` directory, which is ignored by Git.
 
+## Profiling
+
+Detailed runtime profiling now uses Tracy instead of the in-engine timing tables. Run Meridian with a Tracy viewer connected to inspect per-frame update, render, Vulkan, and render-feature zones.
+
+In VS Code, use the `Run Meridian + Tracy` launch compound to build, open the Tracy viewer, and start Meridian together. If you only need the viewer, run the `Open Tracy Profiler (VS 2026)` task. Both prompt for the Tracy viewer path so you can point them at a local Tracy viewer install.
+
+All future runtime-facing work should add or update Tracy coverage as part of the implementation, rather than relying on ad hoc timing code.
+
+- Tracy github: https://github.com/wolfpld/tracy
+- Tracy documentation/manual: https://github.com/wolfpld/tracy/releases/latest/download/tracy.pdf
+
 ## Architecture Guide
 
 This document outlines the core data structures and acceleration strategies for implementing a high-performance path tracer within a procedural, infinite, and simulation-heavy environment.

@@ -32,8 +32,8 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         return;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(720.0F, 0.0F), ImGuiCond_FirstUseEver);
-    ImGui::Begin("System Frame Times");
+    ImGui::SetNextWindowSize(ImVec2(540.0F, 0.0F), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Runtime Stats");
     ImGui::Text(
         "Update delta: %.3f ms (%.1f UPS)",
         m_renderStateSnapshot.timing.updateDeltaMilliseconds,
@@ -44,16 +44,6 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         m_renderStateSnapshot.timing.renderDeltaMilliseconds,
         m_renderStateSnapshot.timing.framesPerSecond);
     ImGui::Text("Render CPU: %.3f ms", m_renderStateSnapshot.timing.renderCpuMilliseconds);
-    ImGui::Text(
-        "Render sync: frame %.3f / acquire %.3f / image %.3f ms",
-        m_renderStateSnapshot.timing.renderFrameFenceWaitMilliseconds,
-        m_renderStateSnapshot.timing.renderAcquireWaitMilliseconds,
-        m_renderStateSnapshot.timing.renderImageFenceWaitMilliseconds);
-    ImGui::Text(
-        "Render work: frontend %.3f / record %.3f / submit+present %.3f ms",
-        m_renderStateSnapshot.timing.renderFrontendMilliseconds,
-        m_renderStateSnapshot.timing.renderCommandRecordingMilliseconds,
-        m_renderStateSnapshot.timing.renderSubmitPresentMilliseconds);
     ImGui::Text(
         "Camera: (%.1f, %.1f, %.1f)",
         m_renderStateSnapshot.camera.position[0],
@@ -67,107 +57,7 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
     ImGui::SameLine();
     ImGui::TextDisabled("(%s)", m_context->getPresentModeName());
     ImGui::Separator();
-
-    if (ImGui::BeginTable(
-            "system-frame-times",
-            5,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("System");
-        ImGui::TableSetupColumn("Current (ms)");
-        ImGui::TableSetupColumn("Avg (ms)");
-        ImGui::TableSetupColumn("Max (ms)");
-        ImGui::TableSetupColumn("Update %");
-        ImGui::TableHeadersRow();
-
-        for (const SystemFrameStat& frameStat : m_renderStateSnapshot.systemFrameStats) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(frameStat.name.data());
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%.3f", frameStat.updateTimeMilliseconds);
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%.3f", frameStat.averageUpdateTimeMilliseconds);
-            ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%.3f", frameStat.maxUpdateTimeMilliseconds);
-            ImGui::TableSetColumnIndex(4);
-            ImGui::Text("%.1f", frameStat.frameSharePercent);
-        }
-
-        ImGui::EndTable();
-    }
-
-    if (!m_renderStateSnapshot.renderPhaseStats.empty()) {
-        ImGui::Separator();
-        ImGui::TextUnformatted("Render Frontend Phases");
-        if (ImGui::BeginTable(
-                "render-phase-times",
-                5,
-                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Phase");
-            ImGui::TableSetupColumn("Current (ms)");
-            ImGui::TableSetupColumn("Avg (ms)");
-            ImGui::TableSetupColumn("Max (ms)");
-            ImGui::TableSetupColumn("Frontend %");
-            ImGui::TableHeadersRow();
-
-            for (const RenderPhaseFrameStat& phaseStat : m_renderStateSnapshot.renderPhaseStats) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(phaseStat.name.data());
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%.3f", phaseStat.timeMilliseconds);
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%.3f", phaseStat.averageTimeMilliseconds);
-                ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%.3f", phaseStat.maxTimeMilliseconds);
-                ImGui::TableSetColumnIndex(4);
-                ImGui::Text("%.1f", phaseStat.frameSharePercent);
-            }
-
-            ImGui::EndTable();
-        }
-    }
-
-    if (!m_renderStateSnapshot.renderFeatureStats.empty()) {
-        ImGui::Separator();
-        ImGui::TextUnformatted("Render Features");
-        if (ImGui::BeginTable(
-                "render-feature-times",
-                8,
-                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Feature");
-            ImGui::TableSetupColumn("Config");
-            ImGui::TableSetupColumn("Begin");
-            ImGui::TableSetupColumn("Record");
-            ImGui::TableSetupColumn("Total");
-            ImGui::TableSetupColumn("Avg Total");
-            ImGui::TableSetupColumn("Max Total");
-            ImGui::TableSetupColumn("Frontend %");
-            ImGui::TableHeadersRow();
-
-            for (const RenderFeatureFrameStat& featureStat : m_renderStateSnapshot.renderFeatureStats) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(featureStat.name.data());
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%.3f", featureStat.configureTimeMilliseconds);
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%.3f", featureStat.beginTimeMilliseconds);
-                ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%.3f", featureStat.recordTimeMilliseconds);
-                ImGui::TableSetColumnIndex(4);
-                ImGui::Text("%.3f", featureStat.totalTimeMilliseconds);
-                ImGui::TableSetColumnIndex(5);
-                ImGui::Text("%.3f", featureStat.averageTotalTimeMilliseconds);
-                ImGui::TableSetColumnIndex(6);
-                ImGui::Text("%.3f", featureStat.maxTotalTimeMilliseconds);
-                ImGui::TableSetColumnIndex(7);
-                ImGui::Text("%.1f", featureStat.frameSharePercent);
-            }
-
-            ImGui::EndTable();
-        }
-    }
+    ImGui::TextUnformatted("Detailed profiling is emitted to Tracy.");
 
     if (m_pathTracerSettings != nullptr) {
         ImGui::Separator();

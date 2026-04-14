@@ -486,11 +486,16 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
             continue;
         }
 
+        const std::vector<std::uint32_t>* materialIds = chunk.materialIds.get();
+        const std::size_t voxelCount = materialIds != nullptr ? materialIds->size() : 0U;
+
         const std::uint32_t voxelOffset = static_cast<std::uint32_t>(voxelMaterials.size());
-        voxelMaterials.insert(
-            voxelMaterials.end(),
-            chunk.materialIds.begin(),
-            chunk.materialIds.end());
+        if (materialIds != nullptr && !materialIds->empty()) {
+            voxelMaterials.insert(
+                voxelMaterials.end(),
+                materialIds->begin(),
+                materialIds->end());
+        }
 
         chunkRecords.push_back(GpuChunkRecord{
             .coordX = chunk.coord.x,
@@ -498,7 +503,7 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
             .coordZ = chunk.coord.z,
             .voxelResolution = chunk.voxelResolution,
             .voxelOffset = voxelOffset,
-            .voxelCount = static_cast<std::uint32_t>(chunk.materialIds.size()),
+            .voxelCount = static_cast<std::uint32_t>(voxelCount),
         });
 
         minChunkCoord[0] = std::min(minChunkCoord[0], chunk.coord.x);

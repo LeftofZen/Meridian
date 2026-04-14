@@ -37,6 +37,7 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(flatbuffers CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(Tracy CONFIG REQUIRED)
 find_package(unofficial-lua CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
 find_package(RecastNavigation CONFIG REQUIRED)
@@ -151,6 +152,7 @@ target_link_libraries(Meridian PRIVATE
     spdlog::spdlog
     flatbuffers::flatbuffers
     zstd::libzstd
+    Tracy::TracyClient
     unofficial::lua::lua
     sol2::sol2
     RecastNavigation::Recast
@@ -162,6 +164,76 @@ if (IMGUI_SOURCE_ROOT_COUNT EQUAL 0)
     target_link_libraries(Meridian PRIVATE imgui::imgui)
 endif()
 
+if (WIN32)
+    add_custom_command(TARGET Meridian POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:Meridian>
+            $<TARGET_FILE_DIR:Meridian>
+        COMMAND_EXPAND_LISTS
+    )
+
+    get_target_property(MERIDIAN_TRACY_DLL_DEBUG Tracy::TracyClient IMPORTED_LOCATION_DEBUG)
+    get_target_property(MERIDIAN_TRACY_DLL_RELEASE Tracy::TracyClient IMPORTED_LOCATION_RELEASE)
+
+    set(MERIDIAN_TRACY_DEBUG_OUTPUT "")
+    set(MERIDIAN_TRACY_RELEASE_OUTPUT "")
+    set(MERIDIAN_TRACY_MINSIZEREL_OUTPUT "")
+    set(MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT "")
+
+    if (MERIDIAN_TRACY_DLL_DEBUG)
+        set(MERIDIAN_TRACY_DEBUG_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/Debug/TracyClient.dll")
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_DEBUG_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_DEBUG}"
+                "${CMAKE_CURRENT_BINARY_DIR}/Debug"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_DEBUG}"
+            VERBATIM
+        )
+    endif()
+
+    if (MERIDIAN_TRACY_DLL_RELEASE)
+        set(MERIDIAN_TRACY_RELEASE_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/Release/TracyClient.dll")
+        set(MERIDIAN_TRACY_MINSIZEREL_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MinSizeRel/TracyClient.dll")
+        set(MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/RelWithDebInfo/TracyClient.dll")
+
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_RELEASE_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_RELEASE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/Release"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_RELEASE}"
+            VERBATIM
+        )
+
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_MINSIZEREL_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_RELEASE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/MinSizeRel"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_RELEASE}"
+            VERBATIM
+        )
+
+        add_custom_command(
+            OUTPUT "${MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MERIDIAN_TRACY_DLL_RELEASE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/RelWithDebInfo"
+            DEPENDS Meridian "${MERIDIAN_TRACY_DLL_RELEASE}"
+            VERBATIM
+        )
+    endif()
+
+    add_custom_target(MeridianRuntimeDeps ALL
+        DEPENDS
+            "$<$<CONFIG:Debug>:${MERIDIAN_TRACY_DEBUG_OUTPUT}>"
+            "$<$<CONFIG:Release>:${MERIDIAN_TRACY_RELEASE_OUTPUT}>"
+            "$<$<CONFIG:MinSizeRel>:${MERIDIAN_TRACY_MINSIZEREL_OUTPUT}>"
+            "$<$<CONFIG:RelWithDebInfo>:${MERIDIAN_TRACY_RELWITHDEBINFO_OUTPUT}>"
+    )
+endif()
+
 if (MSVC)
     target_compile_options(Meridian PRIVATE /W4 /permissive-)
 endif()
@@ -170,6 +242,7 @@ target_compile_definitions(Meridian PRIVATE
     IMGUI_IMPL_VULKAN_USE_VOLK=1
     MERIDIAN_SHADER_OUTPUT_DIR="${MERIDIAN_SHADER_OUTPUT_DIR_CMAKE}"
     SOL_ALL_SAFETIES_ON=1
+    TRACY_ENABLE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )

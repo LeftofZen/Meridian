@@ -25,7 +25,7 @@ public:
 
     [[nodiscard]] PathTracerSettings& settings() noexcept { return m_settings; }
     [[nodiscard]] const PathTracerSettings& settings() const noexcept { return m_settings; }
-    [[nodiscard]] const char* profileName() const noexcept override { return "Path Tracer"; }
+    [[nodiscard]] const char* name() const noexcept override { return "Path Tracer"; }
 
     void setRenderStateStore(RenderStateStore& renderStateStore) noexcept
     {

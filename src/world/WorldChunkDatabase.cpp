@@ -13,6 +13,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <tracy/Tracy.hpp>
+
 namespace Meridian {
 
 namespace {
@@ -66,6 +68,7 @@ template <typename T>
     const WorldChunkStorage& chunkStorage,
     std::uint64_t terrainSettingsSignature)
 {
+    ZoneScopedN("WorldChunkDatabase::serialiseChunk");
     const auto& voxels = chunkStorage.voxels();
     const ChunkBlobHeader header{
         .magic = kChunkBlobMagic,
@@ -102,6 +105,7 @@ template <typename T>
     ChunkKey key,
     std::uint64_t terrainSettingsSignature)
 {
+    ZoneScopedN("WorldChunkDatabase::deserialiseChunk");
     std::size_t readOffset = 0;
     ChunkBlobHeader header{};
     if (!readValue(buffer, readOffset, header)) {
@@ -141,7 +145,11 @@ template <typename T>
         }
     }
 
-    SparseVoxelOctree octree = SparseVoxelOctree::build(voxels, header.voxelResolution);
+    SparseVoxelOctree octree;
+    {
+        ZoneScopedN("SparseVoxelOctree::build");
+        octree = SparseVoxelOctree::build(voxels, header.voxelResolution);
+    }
     return WorldChunkStorage(
         coord,
         key,
@@ -153,6 +161,7 @@ template <typename T>
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> compressChunkBlob(
     const std::vector<std::uint8_t>& serialisedChunk)
 {
+    ZoneScopedN("WorldChunkDatabase::compressChunkBlob");
     std::vector<std::uint8_t> compressedBuffer(ZSTD_compressBound(serialisedChunk.size()));
     const std::size_t compressedSize = ZSTD_compress(
         compressedBuffer.data(),
@@ -170,6 +179,7 @@ template <typename T>
 
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> decompressChunkBlob(MDB_val value)
 {
+    ZoneScopedN("WorldChunkDatabase::decompressChunkBlob");
     const auto* compressedData = static_cast<const std::uint8_t*>(value.mv_data);
     const std::size_t compressedSize = value.mv_size;
     const unsigned long long uncompressedSize =
@@ -283,6 +293,7 @@ std::optional<WorldChunkStorage> WorldChunkDatabase::loadChunk(
     ChunkKey key,
     std::uint64_t terrainSettingsSignature) const
 {
+    ZoneScopedN("WorldChunkDatabase::loadChunk");
     std::scoped_lock lock(m_mutex);
     if (!isInitialised()) {
         return std::nullopt;
@@ -326,6 +337,7 @@ bool WorldChunkDatabase::storeChunk(
     const WorldChunkStorage& chunkStorage,
     std::uint64_t terrainSettingsSignature)
 {
+    ZoneScopedN("WorldChunkDatabase::storeChunk");
     std::scoped_lock lock(m_mutex);
     if (!isInitialised()) {
         return false;

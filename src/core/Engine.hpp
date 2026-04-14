@@ -2,7 +2,6 @@
 
 #include "audio/AudioSystem.hpp"
 #include "core/Logger.hpp"
-#include "core/SystemFrameStats.hpp"
 #include "ecs/ECSSystem.hpp"
 #include "input/InputManager.hpp"
 #include "networking/NetworkSystem.hpp"
@@ -21,6 +20,8 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <thread>
 
@@ -60,20 +61,6 @@ private:
     void startRenderLoop();
     void stopRenderLoop();
 
-    static constexpr std::array<SystemFrameStat, 11> kInitialFrameStats{{
-        {"Window", 0.0F},
-        {"Input", 0.0F},
-        {"Camera", 0.0F},
-        {"Audio", 0.0F},
-        {"Physics", 0.0F},
-        {"ECS", 0.0F},
-        {"Networking", 0.0F},
-        {"Scripting", 0.0F},
-        {"Tasks", 0.0F},
-        {"World", 0.0F},
-        {"Renderer", 0.0F},
-    }};
-
     std::unique_ptr<Window> m_window;
     std::unique_ptr<InputManager> m_inputManager;
     std::unique_ptr<VulkanContext> m_vulkan;
@@ -90,9 +77,7 @@ private:
     std::unique_ptr<TaskSystem> m_tasks;
     std::unique_ptr<World> m_world;
     RenderStateStore m_renderStateStore;
-    std::array<SystemFrameStat, 11> m_systemFrameStats{kInitialFrameStats};
-    float m_lastFrameDeltaMilliseconds{0.0F};
-    float m_lastFrameCpuMilliseconds{0.0F};
+    std::uint64_t m_cachedWorldRenderRevision{std::numeric_limits<std::uint64_t>::max()};
     std::atomic<bool> m_renderLoopRunning{false};
     std::thread m_renderThread;
 };

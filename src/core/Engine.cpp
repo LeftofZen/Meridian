@@ -1,11 +1,30 @@
 #include "core/Engine.hpp"
 
 #include <SDL3/SDL.h>
+#include <tracy/Tracy.hpp>
 
 #include <array>
 #include <cstddef>
+#include <string_view>
 
 namespace Meridian {
+
+namespace {
+
+constexpr std::array<std::string_view, 10> kSystemNames{
+    "Window",
+    "Input",
+    "Camera",
+    "Audio",
+    "Physics",
+    "ECS",
+    "Networking",
+    "Scripting",
+    "Tasks",
+    "World",
+};
+
+} // namespace
 
 void Engine::startRenderLoop()
 {
@@ -14,10 +33,12 @@ void Engine::startRenderLoop()
     }
 
     m_renderThread = std::thread([this]() {
+        tracy::SetThreadName("Render Thread");
         const float performanceFrequency = static_cast<float>(SDL_GetPerformanceFrequency());
         Uint64 previousCounter = SDL_GetPerformanceCounter();
 
         while (m_renderLoopRunning.load(std::memory_order_acquire)) {
+            ZoneScopedN("Render Thread Tick");
             const Uint64 currentCounter = SDL_GetPerformanceCounter();
             const float renderDeltaMilliseconds =
                 static_cast<float>(currentCounter - previousCounter) * 1000.0F /
@@ -25,16 +46,17 @@ void Engine::startRenderLoop()
             previousCounter = currentCounter;
 
             const Uint64 renderCpuStartCounter = SDL_GetPerformanceCounter();
-            m_vulkan->render();
+            {
+                ZoneScopedN("VulkanContext::render");
+                m_vulkan->render();
+            }
             const Uint64 renderCpuEndCounter = SDL_GetPerformanceCounter();
 
             const float renderCpuMilliseconds =
                 static_cast<float>(renderCpuEndCounter - renderCpuStartCounter) * 1000.0F /
                 performanceFrequency;
-            m_renderStateStore.updateRenderStats(
-                renderDeltaMilliseconds,
-                renderCpuMilliseconds,
-                m_vulkan->getLastRenderBackendStats());
+            m_renderStateStore.updateRenderStats(renderDeltaMilliseconds, renderCpuMilliseconds);
+            FrameMarkNamed("Render");
         }
     });
 }
@@ -55,6 +77,7 @@ Engine::~Engine()
 bool Engine::init()
 {
     Logger::init();
+    m_cachedWorldRenderRevision = std::numeric_limits<std::uint64_t>::max();
     MRD_INFO("=== Meridian engine starting ===");
 
     // ── Task system (used by physics and other subsystems) ────────────────
@@ -100,7 +123,6 @@ bool Engine::init()
     m_debugOverlay->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setPathTracerSettings(m_pathTracerRenderer->settings());
     m_worldSceneRenderer->setRenderStateStore(m_renderStateStore);
-    m_renderPipeline->setRenderStateStore(m_renderStateStore);
     m_renderPipeline->addFeature(*m_pathTracerRenderer);
     m_renderPipeline->addFeature(*m_worldSceneRenderer);
     m_renderPipeline->addFeature(*m_debugOverlay);
@@ -190,6 +212,7 @@ bool Engine::init()
 void Engine::run()
 {
     MRD_INFO("Entering main loop (press ESC or close window to exit)");
+    tracy::SetThreadName("Main Thread");
 
     startRenderLoop();
 
@@ -197,6 +220,7 @@ void Engine::run()
     Uint64 previousCounter = SDL_GetPerformanceCounter();
 
     while (!m_window->shouldClose()) {
+        ZoneScopedN("Main Thread Tick");
         const Uint64 currentCounter = SDL_GetPerformanceCounter();
         const float deltaTimeSeconds =
             static_cast<float>(currentCounter - previousCounter) / performanceFrequency;
@@ -219,40 +243,49 @@ void Engine::run()
         for (std::size_t index = 0; index < systems.size(); ++index) {
             ISystem* system = systems[index];
             if (system != nullptr) {
-                const Uint64 updateStartCounter = SDL_GetPerformanceCounter();
-                system->update(deltaTimeSeconds);
-                if (system == m_freeCameraController.get() && m_world != nullptr) {
-                    m_world->setStreamingDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
-                    m_world->setStreamingCamera(m_freeCameraController->cameraState());
+                {
+                    ZoneScopedN("ISystem::update");
+                    const std::string_view systemName = kSystemNames[index];
+                    ZoneName(systemName.data(), systemName.size());
+                    system->update(deltaTimeSeconds);
+                    if (system == m_freeCameraController.get() && m_world != nullptr) {
+                        m_world->setStreamingDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
+                        m_world->setStreamingCamera(m_freeCameraController->cameraState());
+                    }
                 }
-                const Uint64 updateEndCounter = SDL_GetPerformanceCounter();
-                m_systemFrameStats[index].updateTimeMilliseconds =
-                    static_cast<float>(updateEndCounter - updateStartCounter) * 1000.0F /
-                    performanceFrequency;
             }
         }
 
         const Uint64 cpuFrameEndCounter = SDL_GetPerformanceCounter();
-        m_lastFrameDeltaMilliseconds = deltaTimeSeconds * 1000.0F;
-        m_lastFrameCpuMilliseconds =
+        const float frameDeltaMilliseconds = deltaTimeSeconds * 1000.0F;
+        const float frameCpuMilliseconds =
             static_cast<float>(cpuFrameEndCounter - cpuFrameStartCounter) * 1000.0F /
             performanceFrequency;
 
-        m_renderStateStore.updateUpdateStats(
-            m_systemFrameStats,
-            m_lastFrameDeltaMilliseconds,
-            m_lastFrameCpuMilliseconds);
+        m_renderStateStore.updateUpdateTiming(frameDeltaMilliseconds, frameCpuMilliseconds);
         if (m_world) {
-            m_renderStateStore.updateWorldStats(
-                m_world->getResidentChunkCount(),
-                m_world->getInFlightChunkCount(),
-                m_world->getPendingChunkCount(),
-                m_world->getRenderRevision(),
-                m_world->buildRenderData());
+            const std::uint64_t worldRenderRevision = m_world->getRenderRevision();
+            if (worldRenderRevision != m_cachedWorldRenderRevision) {
+                m_renderStateStore.updateWorldStats(
+                    m_world->getResidentChunkCount(),
+                    m_world->getInFlightChunkCount(),
+                    m_world->getPendingChunkCount(),
+                    worldRenderRevision,
+                    m_world->buildRenderData());
+                m_cachedWorldRenderRevision = worldRenderRevision;
+            } else {
+                m_renderStateStore.updateWorldStats(
+                    m_world->getResidentChunkCount(),
+                    m_world->getInFlightChunkCount(),
+                    m_world->getPendingChunkCount(),
+                    worldRenderRevision);
+            }
         }
         if (m_freeCameraController) {
             m_renderStateStore.updateCameraState(m_freeCameraController->cameraState());
         }
+
+        FrameMarkNamed("Update");
     }
 
     stopRenderLoop();
@@ -272,6 +305,7 @@ void Engine::shutdown()
 
     // Reset in reverse init order; each destructor calls its own shutdown()
     m_world.reset();
+    m_cachedWorldRenderRevision = std::numeric_limits<std::uint64_t>::max();
     m_scripting.reset();
     m_network.reset();
     m_ecs.reset();

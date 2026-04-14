@@ -14,7 +14,7 @@ class IRenderFeature {
 public:
     virtual ~IRenderFeature() = default;
 
-    [[nodiscard]] virtual const char* profileName() const noexcept { return "RenderFeature"; }
+    [[nodiscard]] virtual const char* name() const noexcept { return "RenderFeature"; }
     virtual bool init(VulkanContext& /*context*/) { return true; }
     virtual void shutdown() {}
     virtual void handleEvent(const SDL_Event& /*event*/) {}

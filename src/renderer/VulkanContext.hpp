@@ -1,7 +1,6 @@
 #pragma once
 
 #include "core/ISystem.hpp"
-#include "renderer/RenderBackendStats.hpp"
 
 #include <volk.h>
 
@@ -75,10 +74,6 @@ public:
     [[nodiscard]] std::size_t getCurrentFrameSlot() const noexcept
     {
         return m_inFlightFences.empty() ? 0 : (m_currentFrame % m_inFlightFences.size());
-    }
-    [[nodiscard]] RenderBackendStats getLastRenderBackendStats() const noexcept
-    {
-        return m_lastRenderBackendStats;
     }
     void setVSyncEnabled(bool enabled);
     [[nodiscard]] const char* getPresentModeName() const noexcept;
@@ -175,11 +170,10 @@ private:
     bool m_validationEnabled{false};
     SDL_Window* m_windowHandle{nullptr};
     std::size_t m_currentFrame{0};
-    bool m_vsyncEnabled{true};
+    bool m_vsyncEnabled{false};
     bool m_presentationRebuildRequested{false};
     uint32_t m_minImageCount{2};
     VkPresentModeKHR m_presentMode{VK_PRESENT_MODE_FIFO_KHR};
-    RenderBackendStats m_lastRenderBackendStats{};
     std::mutex m_queueSubmitMutex;
     IRenderFrontend* m_renderFrontend{nullptr};
     std::unique_ptr<ShaderLibrary> m_shaderLibrary;

@@ -8,21 +8,11 @@
 #include <imgui_impl_vulkan.h>
 
 #include <SDL3/SDL.h>
+#include <tracy/Tracy.hpp>
 
-#include <chrono>
+#include <cstring>
 
 namespace Meridian {
-
-namespace {
-
-[[nodiscard]] float elapsedMilliseconds(
-    std::chrono::steady_clock::time_point start,
-    std::chrono::steady_clock::time_point end) noexcept
-{
-    return std::chrono::duration<float, std::milli>(end - start).count();
-}
-
-} // namespace
 
 RenderFramePipeline::~RenderFramePipeline()
 {
@@ -135,8 +125,8 @@ void RenderFramePipeline::beginFrame()
         return;
     }
 
+    ZoneScopedN("RenderFramePipeline::beginFrame");
     m_frameConfig = RenderFrameConfig{};
-    m_frameProfilingData.reset(m_features.size());
 
     std::vector<SDL_Event> pendingEvents;
     {
@@ -144,49 +134,43 @@ void RenderFramePipeline::beginFrame()
         pendingEvents.swap(m_pendingEvents);
     }
 
-    auto phaseStart = std::chrono::steady_clock::now();
-    for (const SDL_Event& event : pendingEvents) {
-        SDL_Event mutableEvent = event;
-        ImGui_ImplSDL3_ProcessEvent(&mutableEvent);
+    {
+        ZoneScopedN("Process Render Events");
+        for (const SDL_Event& event : pendingEvents) {
+            SDL_Event mutableEvent = event;
+            ImGui_ImplSDL3_ProcessEvent(&mutableEvent);
 
-        for (IRenderFeature* feature : m_features) {
-            if (feature != nullptr) {
-                feature->handleEvent(event);
+            for (IRenderFeature* feature : m_features) {
+                if (feature != nullptr) {
+                    feature->handleEvent(event);
+                }
             }
         }
     }
-    auto phaseEnd = std::chrono::steady_clock::now();
-    m_frameProfilingData.eventProcessingMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
 
-    phaseStart = std::chrono::steady_clock::now();
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-    phaseEnd = std::chrono::steady_clock::now();
-    m_frameProfilingData.imguiNewFrameMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
-
-    for (std::size_t index = 0; index < m_features.size(); ++index) {
-        IRenderFeature* feature = m_features[index];
-        if (feature != nullptr) {
-            m_frameProfilingData.featureSamples[index].name = feature->profileName();
-            phaseStart = std::chrono::steady_clock::now();
-            feature->configureFrame(m_frameConfig);
-            phaseEnd = std::chrono::steady_clock::now();
-            const float elapsed = elapsedMilliseconds(phaseStart, phaseEnd);
-            m_frameProfilingData.featureSamples[index].configureTimeMilliseconds = elapsed;
-            m_frameProfilingData.configureTotalMilliseconds += elapsed;
-        }
+    {
+        ZoneScopedN("ImGui New Frame");
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
     }
 
     for (std::size_t index = 0; index < m_features.size(); ++index) {
         IRenderFeature* feature = m_features[index];
         if (feature != nullptr) {
-            phaseStart = std::chrono::steady_clock::now();
+            ZoneScopedN("IRenderFeature::configureFrame");
+            const char* featureName = feature->name();
+            ZoneName(featureName, std::strlen(featureName));
+            feature->configureFrame(m_frameConfig);
+        }
+    }
+
+    for (IRenderFeature* feature : m_features) {
+        if (feature != nullptr) {
+            ZoneScopedN("IRenderFeature::beginFrame");
+            const char* featureName = feature->name();
+            ZoneName(featureName, std::strlen(featureName));
             feature->beginFrame();
-            phaseEnd = std::chrono::steady_clock::now();
-            const float elapsed = elapsedMilliseconds(phaseStart, phaseEnd);
-            m_frameProfilingData.featureSamples[index].beginTimeMilliseconds = elapsed;
-            m_frameProfilingData.beginTotalMilliseconds += elapsed;
         }
     }
 }
@@ -197,41 +181,25 @@ void RenderFramePipeline::recordFrame(VkCommandBuffer commandBuffer)
         return;
     }
 
-    auto phaseStart = std::chrono::steady_clock::now();
-    ImGui::Render();
-    auto phaseEnd = std::chrono::steady_clock::now();
-    m_frameProfilingData.imguiRenderMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
+    ZoneScopedN("RenderFramePipeline::recordFrame");
 
-    for (std::size_t index = 0; index < m_features.size(); ++index) {
-        IRenderFeature* feature = m_features[index];
+    {
+        ZoneScopedN("ImGui::Render");
+        ImGui::Render();
+    }
+
+    for (IRenderFeature* feature : m_features) {
         if (feature != nullptr) {
-            phaseStart = std::chrono::steady_clock::now();
+            ZoneScopedN("IRenderFeature::recordFrame");
+            const char* featureName = feature->name();
+            ZoneName(featureName, std::strlen(featureName));
             feature->recordFrame(commandBuffer);
-            phaseEnd = std::chrono::steady_clock::now();
-            const float elapsed = elapsedMilliseconds(phaseStart, phaseEnd);
-            m_frameProfilingData.featureSamples[index].recordTimeMilliseconds = elapsed;
-            m_frameProfilingData.recordTotalMilliseconds += elapsed;
         }
     }
 
-    phaseStart = std::chrono::steady_clock::now();
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
-    phaseEnd = std::chrono::steady_clock::now();
-    m_frameProfilingData.imguiDrawMilliseconds = elapsedMilliseconds(phaseStart, phaseEnd);
-
-    if (m_renderStateStore != nullptr) {
-        const std::array<RenderPhaseTimingSample, 7> renderPhaseSamples{{
-            {"Event Processing", m_frameProfilingData.eventProcessingMilliseconds},
-            {"ImGui New Frame", m_frameProfilingData.imguiNewFrameMilliseconds},
-            {"Feature Configure", m_frameProfilingData.configureTotalMilliseconds},
-            {"Feature Begin", m_frameProfilingData.beginTotalMilliseconds},
-            {"ImGui Render", m_frameProfilingData.imguiRenderMilliseconds},
-            {"Feature Record", m_frameProfilingData.recordTotalMilliseconds},
-            {"ImGui Draw Data", m_frameProfilingData.imguiDrawMilliseconds},
-        }};
-        m_renderStateStore->updateRenderFrontendStats(
-            renderPhaseSamples,
-            m_frameProfilingData.featureSamples);
+    {
+        ZoneScopedN("ImGui Draw Data");
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
     }
 }
 

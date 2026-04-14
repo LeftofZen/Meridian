@@ -11,7 +11,7 @@ class WorldSceneRenderer final : public IRenderFeature {
 public:
     WorldSceneRenderer() = default;
 
-    [[nodiscard]] const char* profileName() const noexcept override { return "World Scene"; }
+    [[nodiscard]] const char* name() const noexcept override { return "World Scene"; }
 
     void setRenderStateStore(RenderStateStore& renderStateStore) noexcept
     {

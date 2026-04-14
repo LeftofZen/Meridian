@@ -15,6 +15,8 @@
 #include <cmath>
 #include <filesystem>
 
+#include <tracy/Tracy.hpp>
+
 namespace Meridian {
 
 namespace {
@@ -303,6 +305,7 @@ void WorldChunkManager::shutdown()
     m_inFlightJobs.clear();
     m_chunkRecords.clear();
     m_heightmapTiles.clear();
+    m_renderChunkData.clear();
     m_residentChunks.clear();
     m_chunkDatabase.reset();
     ++m_renderRevision;
@@ -316,6 +319,7 @@ void WorldChunkManager::update(float /*deltaTimeSeconds*/)
         return;
     }
 
+    ZoneScopedN("WorldChunkManager::update");
     if (m_hasStreamingCamera) {
         pruneChunksOutsideRetention();
         queueChunksAroundFocus();
@@ -342,23 +346,13 @@ std::size_t WorldChunkManager::getPendingChunkCount() const noexcept
 
 std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
 {
+    ZoneScopedN("WorldChunkManager::buildRenderData");
     std::vector<WorldChunkRenderData> renderData;
-    renderData.reserve(m_residentChunks.size());
+    renderData.reserve(m_renderChunkData.size());
 
-    for (const auto& [key, chunkStorage] : m_residentChunks.chunks()) {
+    for (const auto& [key, chunkData] : m_renderChunkData) {
         (void)key;
-
-        WorldChunkRenderData chunkData{
-            .coord = chunkStorage.coord(),
-            .voxelResolution = chunkStorage.voxelResolution(),
-        };
-        chunkData.materialIds.reserve(chunkStorage.voxels().size());
-
-        for (const VoxelSample& voxel : chunkStorage.voxels()) {
-            chunkData.materialIds.push_back(static_cast<std::uint32_t>(voxel.materialId));
-        }
-
-        renderData.push_back(std::move(chunkData));
+        renderData.push_back(chunkData);
     }
 
     std::sort(
@@ -375,6 +369,27 @@ std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
         });
 
     return renderData;
+}
+
+void WorldChunkManager::cacheResidentChunkRenderData(const WorldChunkStorage& chunkStorage)
+{
+    m_renderChunkData.insert_or_assign(chunkStorage.key(), createRenderData(chunkStorage));
+}
+
+WorldChunkRenderData WorldChunkManager::createRenderData(const WorldChunkStorage& chunkStorage)
+{
+    auto materialIds = std::make_shared<std::vector<std::uint32_t>>();
+    materialIds->reserve(chunkStorage.voxels().size());
+
+    for (const VoxelSample& voxel : chunkStorage.voxels()) {
+        materialIds->push_back(static_cast<std::uint32_t>(voxel.materialId));
+    }
+
+    return WorldChunkRenderData{
+        .coord = chunkStorage.coord(),
+        .voxelResolution = chunkStorage.voxelResolution(),
+        .materialIds = std::move(materialIds),
+    };
 }
 
 void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState) noexcept
@@ -408,6 +423,7 @@ void WorldChunkManager::queueChunksAroundFocus()
         return;
     }
 
+    ZoneScopedN("WorldChunkManager::queueChunksAroundFocus");
     const int radiusXZ = streamRadiusXZ();
 
     for (int y = m_streamingFocusChunk.y - kStreamChunksBelowFocus;
@@ -459,6 +475,7 @@ bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
 
 void WorldChunkManager::pruneChunksOutsideRetention()
 {
+    ZoneScopedN("WorldChunkManager::pruneChunksOutsideRetention");
     bool removedResidentChunk = false;
     const int radiusXZ = retentionRadiusXZ();
 
@@ -471,6 +488,7 @@ void WorldChunkManager::pruneChunksOutsideRetention()
         }
 
         m_residentChunks.erase(key);
+        m_renderChunkData.erase(key);
         m_chunkRecords.erase(key);
         removedResidentChunk = true;
     }
@@ -513,6 +531,7 @@ void WorldChunkManager::pruneChunksOutsideRetention()
 
 void WorldChunkManager::requestChunk(ChunkCoord coord)
 {
+    ZoneScopedN("WorldChunkManager::requestChunk");
     if (!shouldRequestChunk(coord)) {
         return;
     }
@@ -532,10 +551,12 @@ void WorldChunkManager::requestChunk(ChunkCoord coord)
 
 void WorldChunkManager::rebuildActiveTerrain()
 {
+    ZoneScopedN("WorldChunkManager::rebuildActiveTerrain");
     m_pendingRequests.clear();
     m_inFlightJobs.clear();
     m_chunkRecords.clear();
     m_heightmapTiles.clear();
+    m_renderChunkData.clear();
     m_residentChunks.clear();
     ++m_renderRevision;
 
@@ -548,6 +569,7 @@ void WorldChunkManager::rebuildActiveTerrain()
 
 void WorldChunkManager::dispatchChunkJobs()
 {
+    ZoneScopedN("WorldChunkManager::dispatchChunkJobs");
     while (!m_pendingRequests.empty() && m_inFlightJobs.size() < kMaxConcurrentJobs) {
         const ChunkCoord coord = m_pendingRequests.front();
         m_pendingRequests.pop_front();
@@ -567,11 +589,16 @@ void WorldChunkManager::dispatchChunkJobs()
             m_heightmapGenerator != nullptr ? m_heightmapGenerator->settings() : TerrainHeightmapSettings{};
         const std::uint64_t settingsSignature = terrainSettingsSignature(heightmapSettings);
         if (m_chunkDatabase != nullptr) {
+            ZoneScopedN("WorldChunkManager::tryLoadCachedChunk");
             if (std::optional<WorldChunkStorage> cachedChunk =
                     m_chunkDatabase->loadChunk(coord, key, settingsSignature);
                 cachedChunk.has_value()) {
                 chunkIt->second.status = ChunkStatus::Resident;
                 m_residentChunks.upsert(std::move(*cachedChunk));
+                if (const WorldChunkStorage* residentChunk = m_residentChunks.find(key);
+                    residentChunk != nullptr) {
+                    cacheResidentChunkRenderData(*residentChunk);
+                }
                 ++m_renderRevision;
 
                 if (const WorldChunkStorage* residentChunk = m_residentChunks.find(key);
@@ -586,6 +613,7 @@ void WorldChunkManager::dispatchChunkJobs()
 
         TerrainHeightmapTile heightmapTile;
         if (m_heightmapGenerator != nullptr) {
+            ZoneScopedN("WorldChunkManager::prepareHeightmapTile");
             const ChunkKey tileKey = heightmapTileKey(coord);
             auto tileIt = m_heightmapTiles.find(tileKey);
             if (tileIt == m_heightmapTiles.end()) {
@@ -606,9 +634,11 @@ void WorldChunkManager::dispatchChunkJobs()
                 heightmapSettings,
                 settingsSignature,
                 chunkDatabase = m_chunkDatabase]() {
+                ZoneScopedN("WorldChunkManager Chunk Job");
                 GeneratedChunk generatedChunk =
                     WorldChunkManager::generateChunk(coord, heightmapTile, heightmapSettings);
                 if (chunkDatabase != nullptr) {
+                    ZoneScopedN("WorldChunkManager::storeGeneratedChunk");
                     (void)chunkDatabase->storeChunk(generatedChunk.chunkStorage, settingsSignature);
                 }
                 return generatedChunk;
@@ -621,10 +651,12 @@ void WorldChunkManager::collectCompletedJobs()
 {
     using namespace std::chrono_literals;
 
+    ZoneScopedN("WorldChunkManager::collectCompletedJobs");
     auto nextJob = std::remove_if(
         m_inFlightJobs.begin(),
         m_inFlightJobs.end(),
         [this](ChunkJob& job) {
+            ZoneScopedN("WorldChunkManager::collectCompletedJob");
             if (job.future.wait_for(0ms) != std::future_status::ready) {
                 return false;
             }
@@ -643,6 +675,10 @@ void WorldChunkManager::collectCompletedJobs()
             ChunkRecord& record = chunkIt->second;
             record.status = ChunkStatus::Resident;
             m_residentChunks.upsert(std::move(generatedChunk.chunkStorage));
+            if (const WorldChunkStorage* residentChunk = m_residentChunks.find(job.key);
+                residentChunk != nullptr) {
+                cacheResidentChunkRenderData(*residentChunk);
+            }
             ++m_renderRevision;
 
             const WorldChunkStorage* residentChunk = m_residentChunks.find(job.key);
@@ -662,12 +698,16 @@ WorldChunkManager::GeneratedChunk WorldChunkManager::generateChunk(
     TerrainHeightmapTile heightmapTile,
     TerrainHeightmapSettings heightmapSettings)
 {
+    ZoneScopedN("WorldChunkManager::generateChunk");
     const ChunkKey key = makeChunkKey(coord);
     std::vector<VoxelSample> voxels = !heightmapTile.grayscale.empty()
         ? generateHeightmapChunkVoxels(coord, heightmapTile, heightmapSettings)
         : generateDefaultChunkVoxels(coord);
-    SparseVoxelOctree octree =
-        SparseVoxelOctree::build(voxels, kWorldChunkResolution);
+    SparseVoxelOctree octree;
+    {
+        ZoneScopedN("SparseVoxelOctree::build");
+        octree = SparseVoxelOctree::build(voxels, kWorldChunkResolution);
+    }
 
     return GeneratedChunk{
         .chunkStorage = WorldChunkStorage(
@@ -684,6 +724,7 @@ std::vector<VoxelSample> WorldChunkManager::generateHeightmapChunkVoxels(
     const TerrainHeightmapTile& tile,
     const TerrainHeightmapSettings& settings)
 {
+    ZoneScopedN("WorldChunkManager::generateHeightmapChunkVoxels");
     std::vector<VoxelSample> voxels(
         static_cast<std::size_t>(kWorldChunkResolution) *
         kWorldChunkResolution *
@@ -737,6 +778,7 @@ std::vector<VoxelSample> WorldChunkManager::generateHeightmapChunkVoxels(
 
 std::vector<VoxelSample> WorldChunkManager::generateDefaultChunkVoxels(ChunkCoord coord)
 {
+    ZoneScopedN("WorldChunkManager::generateDefaultChunkVoxels");
     const VoxelMaterialId material = defaultMaterialForChunk(coord);
     std::vector<VoxelSample> voxels(
         static_cast<std::size_t>(kWorldChunkResolution) *
