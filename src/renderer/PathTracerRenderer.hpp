@@ -44,8 +44,8 @@ private:
         std::int32_t coordY{0};
         std::int32_t coordZ{0};
         std::uint32_t voxelResolution{0};
-        std::uint32_t voxelOffset{0};
-        std::uint32_t voxelCount{0};
+        std::uint32_t octreeNodeOffset{0};
+        std::uint32_t octreeNodeCount{0};
         std::uint32_t reserved0{0};
         std::uint32_t reserved1{0};
     };
@@ -70,10 +70,10 @@ private:
     struct FrameResources {
         VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
         GpuBuffer chunkBuffer;
-        GpuBuffer voxelBuffer;
+        GpuBuffer octreeBuffer;
         GpuBuffer chunkLookupBuffer;
         std::size_t uploadedChunkCount{0};
-        std::size_t uploadedVoxelCount{0};
+        std::size_t uploadedOctreeNodeCount{0};
         std::uint64_t worldRevision{~0ULL};
         std::array<float, 3> sceneMin{-1.0F, -1.0F, -1.0F};
         std::array<float, 3> sceneMax{1.0F, 1.0F, 1.0F};
@@ -81,7 +81,6 @@ private:
         std::array<std::uint32_t, 3> chunkGridSize{1, 1, 1};
         std::array<std::int32_t, 3> cameraChunkCoord{0, 0, 0};
         std::uint32_t chunkResolution{32};
-        float renderDistanceChunks{8.0F};
         std::uint64_t renderSettingsRevision{~0ULL};
     };
 

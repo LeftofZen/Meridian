@@ -98,10 +98,7 @@ void VulkanContext::shutdown()
         if (m_renderFrontend != nullptr) {
             m_renderFrontend->shutdown();
         }
-        if (m_tracyVkContext != nullptr) {
-            TracyVkDestroy(m_tracyVkContext);
-            m_tracyVkContext = nullptr;
-        }
+        destroyTracyContext();
         m_shaderLibrary.reset();
         destroyRenderResources();
         destroySwapchain();
@@ -487,6 +484,9 @@ void VulkanContext::initialiseFragmentShadingRateSupport() noexcept
     }
 
     m_supportedFragmentShadingRates = std::move(supportedRates);
+    if (std::ranges::find(m_supportedFragmentShadingRates, 2U) != m_supportedFragmentShadingRates.end()) {
+        m_fragmentShadingRateTexelSize = 2U;
+    }
     MRD_INFO(
         "Fragment shading rate support: {}",
         m_supportedFragmentShadingRates.size() > 1 ? "enabled" : "1x1 only");
@@ -735,6 +735,8 @@ bool VulkanContext::createTracyContext()
         return false;
     }
 
+    destroyTracyContext();
+
     VkCommandBuffer tracyCommandBuffer = VK_NULL_HANDLE;
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -760,13 +762,21 @@ bool VulkanContext::createTracyContext()
     return true;
 }
 
+void VulkanContext::destroyTracyContext() noexcept
+{
+    if (m_tracyVkContext != nullptr) {
+        TracyVkDestroy(m_tracyVkContext);
+        m_tracyVkContext = nullptr;
+    }
+}
+
 bool VulkanContext::createSyncObjects()
 {
     const std::size_t frameCount = std::max<std::size_t>(
         1,
         std::min<std::size_t>(2, m_swapchainImages.size()));
     m_imageAvailableSemaphores.resize(frameCount);
-    m_renderFinishedSemaphores.resize(frameCount);
+    m_renderFinishedSemaphores.resize(m_swapchainImages.size());
     m_inFlightFences.resize(frameCount);
     m_imagesInFlight.assign(m_swapchainImages.size(), VK_NULL_HANDLE);
 
@@ -783,11 +793,6 @@ bool VulkanContext::createSyncObjects()
                 &semaphoreInfo,
                 nullptr,
                 &m_imageAvailableSemaphores[index]) != VK_SUCCESS ||
-            vkCreateSemaphore(
-                m_device,
-                &semaphoreInfo,
-                nullptr,
-                &m_renderFinishedSemaphores[index]) != VK_SUCCESS ||
             vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFences[index]) != VK_SUCCESS) {
             MRD_ERROR("Failed to create renderer sync objects");
             return false;
@@ -798,13 +803,25 @@ bool VulkanContext::createSyncObjects()
             VK_OBJECT_TYPE_SEMAPHORE,
             std::format("Image Available Semaphore {}", index));
         setObjectDebugName(
-            reinterpret_cast<std::uint64_t>(m_renderFinishedSemaphores[index]),
-            VK_OBJECT_TYPE_SEMAPHORE,
-            std::format("Render Finished Semaphore {}", index));
-        setObjectDebugName(
             reinterpret_cast<std::uint64_t>(m_inFlightFences[index]),
             VK_OBJECT_TYPE_FENCE,
             std::format("Frame Fence {}", index));
+    }
+
+    for (std::size_t index = 0; index < m_renderFinishedSemaphores.size(); ++index) {
+        if (vkCreateSemaphore(
+                m_device,
+                &semaphoreInfo,
+                nullptr,
+                &m_renderFinishedSemaphores[index]) != VK_SUCCESS) {
+            MRD_ERROR("Failed to create renderer sync objects");
+            return false;
+        }
+
+        setObjectDebugName(
+            reinterpret_cast<std::uint64_t>(m_renderFinishedSemaphores[index]),
+            VK_OBJECT_TYPE_SEMAPHORE,
+            std::format("Render Finished Semaphore {}", index));
     }
 
     return true;
@@ -881,7 +898,7 @@ bool VulkanContext::renderFrame()
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[frameIndex];
+    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[imageIndex];
 
     {
         ZoneScopedN("Submit And Present");
@@ -897,7 +914,7 @@ bool VulkanContext::renderFrame()
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[frameIndex];
+        presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[imageIndex];
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &imageIndex;
@@ -933,6 +950,7 @@ bool VulkanContext::recreatePresentationResources()
     if (m_renderFrontend != nullptr) {
         m_renderFrontend->shutdown();
     }
+    destroyTracyContext();
     destroyRenderResources();
     destroySwapchain();
 

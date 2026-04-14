@@ -34,18 +34,6 @@ constexpr VkViewport kDefaultViewport{};
     };
 }
 
-[[nodiscard]] bool shouldRenderChunk(
-    const WorldChunkRenderData& chunk,
-    const std::array<std::int32_t, 3>& cameraChunk,
-    float renderDistanceChunks) noexcept
-{
-    const float deltaX = static_cast<float>(chunk.coord.x - cameraChunk[0]);
-    const float deltaY = static_cast<float>(chunk.coord.y - cameraChunk[1]);
-    const float deltaZ = static_cast<float>(chunk.coord.z - cameraChunk[2]);
-    const float distanceSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
-    return distanceSquared <= renderDistanceChunks * renderDistanceChunks;
-}
-
 } // namespace
 
 bool PathTracerRenderer::init(VulkanContext& context)
@@ -186,7 +174,7 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
             m_frameIndex++,
             static_cast<std::uint32_t>(m_settings.samplesPerPixel),
             static_cast<std::uint32_t>(m_settings.maxBounces),
-            static_cast<std::uint32_t>(frameResources.uploadedChunkCount),
+            static_cast<std::uint32_t>(m_settings.maxDdaSteps),
         },
         .chunkGridOrigin = {
             frameResources.chunkGridOrigin[0],
@@ -479,8 +467,6 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
         return false;
     }
 
-    const float renderDistanceChunks =
-        m_renderStateSnapshot.worldRenderSettings.renderDistanceChunks;
     const std::uint32_t chunkResolution = m_renderStateSnapshot.world.chunks.empty()
         ? frameResources.chunkResolution
         : m_renderStateSnapshot.world.chunks.front().voxelResolution;
@@ -488,10 +474,10 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
         cameraChunkCoord(m_renderStateSnapshot.camera, chunkResolution);
 
     std::vector<GpuChunkRecord> chunkRecords;
-    std::vector<std::uint32_t> voxelMaterials;
+    std::vector<std::uint32_t> octreeNodeWords;
     std::vector<std::uint32_t> chunkLookup;
     chunkRecords.reserve(m_renderStateSnapshot.world.chunks.size());
-    voxelMaterials.reserve(m_renderStateSnapshot.world.uploadedVoxelCount);
+    octreeNodeWords.reserve(m_renderStateSnapshot.world.uploadedOctreeNodeCount * 9U);
 
     std::array<float, 3> sceneMin{
         std::numeric_limits<float>::max(),
@@ -515,19 +501,17 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
     };
 
     for (const WorldChunkRenderData& chunk : m_renderStateSnapshot.world.chunks) {
-        if (!shouldRenderChunk(chunk, currentCameraChunkCoord, renderDistanceChunks)) {
-            continue;
-        }
+        const std::vector<std::uint32_t>* packedOctreeNodes = chunk.packedOctreeNodes.get();
+        const std::size_t nodeWordCount = packedOctreeNodes != nullptr ? packedOctreeNodes->size() : 0U;
+        const std::size_t nodeCount = nodeWordCount / 9U;
 
-        const std::vector<std::uint32_t>* materialIds = chunk.materialIds.get();
-        const std::size_t voxelCount = materialIds != nullptr ? materialIds->size() : 0U;
-
-        const std::uint32_t voxelOffset = static_cast<std::uint32_t>(voxelMaterials.size());
-        if (materialIds != nullptr && !materialIds->empty()) {
-            voxelMaterials.insert(
-                voxelMaterials.end(),
-                materialIds->begin(),
-                materialIds->end());
+        const std::uint32_t octreeNodeOffset =
+            static_cast<std::uint32_t>(octreeNodeWords.size() / 9U);
+        if (packedOctreeNodes != nullptr && !packedOctreeNodes->empty()) {
+            octreeNodeWords.insert(
+                octreeNodeWords.end(),
+                packedOctreeNodes->begin(),
+                packedOctreeNodes->end());
         }
 
         chunkRecords.push_back(GpuChunkRecord{
@@ -535,8 +519,8 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
             .coordY = chunk.coord.y,
             .coordZ = chunk.coord.z,
             .voxelResolution = chunk.voxelResolution,
-            .voxelOffset = voxelOffset,
-            .voxelCount = static_cast<std::uint32_t>(voxelCount),
+            .octreeNodeOffset = octreeNodeOffset,
+            .octreeNodeCount = static_cast<std::uint32_t>(nodeCount),
         });
 
         minChunkCoord[0] = std::min(minChunkCoord[0], chunk.coord.x);
@@ -563,15 +547,15 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
 
     if (chunkRecords.empty()) {
         chunkRecords.push_back(GpuChunkRecord{});
-        voxelMaterials.push_back(0U);
+        octreeNodeWords.push_back(0U);
         chunkLookup.push_back(0U);
         sceneMin = {-1.0F, -1.0F, -1.0F};
         sceneMax = {1.0F, 1.0F, 1.0F};
         frameResources.chunkGridOrigin = {0, 0, 0};
-        frameResources.chunkGridSize = {1, 1, 1};
+        frameResources.chunkGridSize = {0, 0, 0};
         frameResources.chunkResolution = 32;
         frameResources.uploadedChunkCount = 0;
-        frameResources.uploadedVoxelCount = 0;
+        frameResources.uploadedOctreeNodeCount = 0;
     } else {
         frameResources.chunkGridOrigin = minChunkCoord;
         frameResources.chunkGridSize = {
@@ -606,25 +590,24 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
         }
 
         frameResources.uploadedChunkCount = m_renderStateSnapshot.world.chunks.size();
-        frameResources.uploadedVoxelCount = m_renderStateSnapshot.world.uploadedVoxelCount;
+        frameResources.uploadedOctreeNodeCount = m_renderStateSnapshot.world.uploadedOctreeNodeCount;
     }
 
     frameResources.sceneMin = sceneMin;
     frameResources.sceneMax = sceneMax;
     frameResources.worldRevision = m_renderStateSnapshot.world.revision;
     frameResources.cameraChunkCoord = currentCameraChunkCoord;
-    frameResources.renderDistanceChunks = renderDistanceChunks;
     frameResources.renderSettingsRevision = m_renderStateSnapshot.worldRenderSettings.revision;
 
     const VkDeviceSize chunkBufferSize =
         static_cast<VkDeviceSize>(chunkRecords.size() * sizeof(GpuChunkRecord));
-    const VkDeviceSize voxelBufferSize =
-        static_cast<VkDeviceSize>(voxelMaterials.size() * sizeof(std::uint32_t));
+    const VkDeviceSize octreeBufferSize =
+        static_cast<VkDeviceSize>(octreeNodeWords.size() * sizeof(std::uint32_t));
     const VkDeviceSize chunkLookupBufferSize =
         static_cast<VkDeviceSize>(chunkLookup.size() * sizeof(std::uint32_t));
 
     if (!ensureBufferCapacity(frameResources.chunkBuffer, chunkBufferSize) ||
-        !ensureBufferCapacity(frameResources.voxelBuffer, voxelBufferSize) ||
+        !ensureBufferCapacity(frameResources.octreeBuffer, octreeBufferSize) ||
         !ensureBufferCapacity(frameResources.chunkLookupBuffer, chunkLookupBufferSize)) {
         return false;
     }
@@ -642,13 +625,13 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
 
     vkMapMemory(
         m_context->getDevice(),
-        frameResources.voxelBuffer.memory,
+        frameResources.octreeBuffer.memory,
         0,
-        voxelBufferSize,
+        octreeBufferSize,
         0,
         &mappedData);
-    std::memcpy(mappedData, voxelMaterials.data(), static_cast<std::size_t>(voxelBufferSize));
-    vkUnmapMemory(m_context->getDevice(), frameResources.voxelBuffer.memory);
+    std::memcpy(mappedData, octreeNodeWords.data(), static_cast<std::size_t>(octreeBufferSize));
+    vkUnmapMemory(m_context->getDevice(), frameResources.octreeBuffer.memory);
 
     vkMapMemory(
         m_context->getDevice(),
@@ -665,10 +648,10 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
         .offset = 0,
         .range = chunkBufferSize,
     };
-    const VkDescriptorBufferInfo voxelBufferInfo{
-        .buffer = frameResources.voxelBuffer.buffer,
+    const VkDescriptorBufferInfo octreeBufferInfo{
+        .buffer = frameResources.octreeBuffer.buffer,
         .offset = 0,
-        .range = voxelBufferSize,
+        .range = octreeBufferSize,
     };
     const VkDescriptorBufferInfo chunkLookupBufferInfo{
         .buffer = frameResources.chunkLookupBuffer.buffer,
@@ -691,7 +674,7 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
             .dstBinding = 1,
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pBufferInfo = &voxelBufferInfo,
+            .pBufferInfo = &octreeBufferInfo,
         },
         VkWriteDescriptorSet{
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -789,7 +772,7 @@ void PathTracerRenderer::destroyDescriptorResources() noexcept
 {
     for (FrameResources& frameResources : m_frameResources) {
         destroyBuffer(frameResources.chunkBuffer);
-        destroyBuffer(frameResources.voxelBuffer);
+        destroyBuffer(frameResources.octreeBuffer);
         destroyBuffer(frameResources.chunkLookupBuffer);
         frameResources.descriptorSet = VK_NULL_HANDLE;
     }

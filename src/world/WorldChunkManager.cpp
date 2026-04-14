@@ -379,17 +379,25 @@ void WorldChunkManager::cacheResidentChunkRenderData(const WorldChunkStorage& ch
 
 WorldChunkRenderData WorldChunkManager::createRenderData(const WorldChunkStorage& chunkStorage)
 {
-    auto materialIds = std::make_shared<std::vector<std::uint32_t>>();
-    materialIds->reserve(chunkStorage.voxels().size());
+    auto packedOctreeNodes = std::make_shared<std::vector<std::uint32_t>>();
+    const auto& nodes = chunkStorage.octree().nodes();
+    packedOctreeNodes->reserve(nodes.size() * 9U);
 
-    for (const VoxelSample& voxel : chunkStorage.voxels()) {
-        materialIds->push_back(static_cast<std::uint32_t>(voxel.materialId));
+    for (const SparseVoxelOctree::Node& node : nodes) {
+        for (std::uint32_t childIndex : node.children) {
+            packedOctreeNodes->push_back(childIndex);
+        }
+
+        packedOctreeNodes->push_back(
+            static_cast<std::uint32_t>(node.childMask) |
+            (static_cast<std::uint32_t>(node.leaf ? 1U : 0U) << 8U) |
+            (static_cast<std::uint32_t>(node.materialId) << 16U));
     }
 
     return WorldChunkRenderData{
         .coord = chunkStorage.coord(),
         .voxelResolution = chunkStorage.voxelResolution(),
-        .materialIds = std::move(materialIds),
+        .packedOctreeNodes = std::move(packedOctreeNodes),
     };
 }
 
@@ -403,19 +411,9 @@ void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState)
     m_hasStreamingCamera = true;
 }
 
-void WorldChunkManager::setRenderDistanceChunks(float renderDistanceChunks) noexcept
-{
-    m_renderDistanceChunks = std::clamp(renderDistanceChunks, 1.0F, 32.0F);
-}
-
 void WorldChunkManager::setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept
 {
     m_generationDistanceChunks = std::clamp(generationDistanceChunks, 1.0F, 32.0F);
-}
-
-int WorldChunkManager::renderRadiusXZ() const noexcept
-{
-    return std::max(1, static_cast<int>(std::ceil(m_renderDistanceChunks)));
 }
 
 int WorldChunkManager::generationRadiusXZ() const noexcept
@@ -423,14 +421,9 @@ int WorldChunkManager::generationRadiusXZ() const noexcept
     return std::max(1, static_cast<int>(std::ceil(m_generationDistanceChunks)));
 }
 
-int WorldChunkManager::residentRadiusXZ() const noexcept
-{
-    return std::max(renderRadiusXZ(), generationRadiusXZ());
-}
-
 int WorldChunkManager::retentionRadiusXZ() const noexcept
 {
-    return std::max(1, static_cast<int>(std::ceil(static_cast<float>(residentRadiusXZ()) + kRetentionPaddingChunks)));
+    return std::max(1, static_cast<int>(std::ceil(m_generationDistanceChunks + kRetentionPaddingChunks)));
 }
 
 void WorldChunkManager::queueChunksAroundFocus()
@@ -440,7 +433,7 @@ void WorldChunkManager::queueChunksAroundFocus()
     }
 
     ZoneScopedN("WorldChunkManager::queueChunksAroundFocus");
-    const int radiusXZ = residentRadiusXZ();
+    const int radiusXZ = generationRadiusXZ();
 
     for (int y = m_streamingFocusChunk.y - kStreamChunksBelowFocus;
          y <= m_streamingFocusChunk.y + kStreamChunksAboveFocus;
@@ -474,22 +467,6 @@ bool WorldChunkManager::shouldKeepChunk(ChunkCoord coord) const noexcept
 }
 
 bool WorldChunkManager::shouldRequestChunk(ChunkCoord coord) const noexcept
-{
-    if (!m_hasStreamingCamera) {
-        return true;
-    }
-
-    const int radiusXZ = residentRadiusXZ();
-    const bool withinXZ =
-        std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
-        std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
-    const bool withinY =
-        coord.y >= m_streamingFocusChunk.y - kStreamChunksBelowFocus &&
-        coord.y <= m_streamingFocusChunk.y + kStreamChunksAboveFocus;
-    return withinXZ && withinY;
-}
-
-bool WorldChunkManager::shouldGenerateChunk(ChunkCoord coord) const noexcept
 {
     if (!m_hasStreamingCamera) {
         return true;
@@ -595,12 +572,7 @@ void WorldChunkManager::requestChunk(ChunkCoord coord)
     }
 
     const ChunkKey key = makeChunkKey(coord);
-    auto existingRecord = m_chunkRecords.find(key);
-    if (existingRecord != m_chunkRecords.end()) {
-        if (existingRecord->second.status == ChunkStatus::Missing && shouldGenerateChunk(coord)) {
-            existingRecord->second.status = ChunkStatus::Requested;
-            m_pendingRequests.push_back(coord);
-        }
+    if (m_chunkRecords.contains(key)) {
         return;
     }
 
@@ -670,11 +642,6 @@ void WorldChunkManager::dispatchChunkJobs()
                 }
                 continue;
             }
-        }
-
-        if (!shouldGenerateChunk(coord)) {
-            chunkIt->second.status = ChunkStatus::Missing;
-            continue;
         }
 
         chunkIt->second.status = ChunkStatus::Generating;

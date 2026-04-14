@@ -120,6 +120,18 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
             m_pathTracerSettings->clamp();
         }
 
+        int maxDdaSteps = m_pathTracerSettings->maxDdaSteps;
+        if (ImGui::SliderInt(
+            "Max DDA Steps",
+            &maxDdaSteps,
+            16,
+            4096,
+            "%d",
+            ImGuiSliderFlags_Logarithmic)) {
+            m_pathTracerSettings->maxDdaSteps = maxDdaSteps;
+            m_pathTracerSettings->clamp();
+        }
+
         ImGui::Spacing();
         ImGui::TextUnformatted("Camera Controls");
         ImGui::TextUnformatted("Move: W A S D");

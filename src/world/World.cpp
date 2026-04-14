@@ -110,13 +110,6 @@ void World::setStreamingCamera(const CameraRenderState& cameraState) noexcept
     }
 }
 
-void World::setRenderDistanceChunks(float renderDistanceChunks) noexcept
-{
-    if (m_chunkManager) {
-        m_chunkManager->setRenderDistanceChunks(renderDistanceChunks);
-    }
-}
-
 void World::setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept
 {
     if (m_chunkManager) {

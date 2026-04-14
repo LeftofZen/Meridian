@@ -20,15 +20,18 @@ public:
 
     bool init(VulkanContext& context) override;
     void shutdown() override;
+    void handleEvent(const SDL_Event& event) override;
     void configureFrame(RenderFrameConfig& config) override;
     void beginFrame() override;
 
 private:
+    void drawChunkWireframeOverlay();
     [[nodiscard]] float residentChunkBlend() const noexcept;
 
     VulkanContext* m_context{nullptr};
     RenderStateStore* m_renderStateStore{nullptr};
     RenderStateSnapshot m_renderStateSnapshot;
+    bool m_chunkWireframeEnabled{false};
 };
 
 } // namespace Meridian

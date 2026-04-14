@@ -40,7 +40,6 @@ public:
     [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
     void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
-    void setRenderDistanceChunks(float renderDistanceChunks) noexcept;
     void setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept;
     void rebuildActiveTerrain();
 
@@ -48,7 +47,6 @@ private:
     enum class ChunkStatus {
         Requested,
         Generating,
-        Missing,
         Resident,
     };
 
@@ -78,10 +76,7 @@ private:
     void cacheResidentChunkRenderData(const WorldChunkStorage& chunkStorage);
     [[nodiscard]] bool shouldKeepChunk(ChunkCoord coord) const noexcept;
     [[nodiscard]] bool shouldRequestChunk(ChunkCoord coord) const noexcept;
-    [[nodiscard]] bool shouldGenerateChunk(ChunkCoord coord) const noexcept;
-    [[nodiscard]] int renderRadiusXZ() const noexcept;
     [[nodiscard]] int generationRadiusXZ() const noexcept;
-    [[nodiscard]] int residentRadiusXZ() const noexcept;
     [[nodiscard]] int retentionRadiusXZ() const noexcept;
     [[nodiscard]] static WorldChunkRenderData createRenderData(const WorldChunkStorage& chunkStorage);
 
@@ -100,7 +95,6 @@ private:
     static constexpr int kStreamChunksAboveFocus{1};
     static constexpr int kRetentionChunksBelowFocus{4};
     static constexpr int kRetentionChunksAboveFocus{2};
-    static constexpr float kDefaultRenderDistanceChunks{8.0F};
     static constexpr float kDefaultGenerationDistanceChunks{8.0F};
     static constexpr float kRetentionPaddingChunks{1.0F};
 
@@ -110,7 +104,6 @@ private:
     bool m_initialised{false};
     bool m_hasStreamingCamera{false};
     ChunkCoord m_streamingFocusChunk{};
-    float m_renderDistanceChunks{kDefaultRenderDistanceChunks};
     float m_generationDistanceChunks{kDefaultGenerationDistanceChunks};
     std::deque<ChunkCoord> m_pendingRequests;
     std::vector<ChunkJob> m_inFlightJobs;

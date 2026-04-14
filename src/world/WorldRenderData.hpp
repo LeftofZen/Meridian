@@ -11,11 +11,11 @@ namespace Meridian {
 struct WorldChunkRenderData {
     ChunkCoord coord;
     std::uint32_t voxelResolution{0};
-    std::shared_ptr<const std::vector<std::uint32_t>> materialIds;
+    std::shared_ptr<const std::vector<std::uint32_t>> packedOctreeNodes;
 
-    [[nodiscard]] std::size_t voxelCount() const noexcept
+    [[nodiscard]] std::size_t octreeNodeCount() const noexcept
     {
-        return materialIds != nullptr ? materialIds->size() : 0U;
+        return packedOctreeNodes != nullptr ? packedOctreeNodes->size() / 9U : 0U;
     }
 };
 

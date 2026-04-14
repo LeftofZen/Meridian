@@ -119,6 +119,7 @@ private:
     [[nodiscard]] bool renderFrame();
     [[nodiscard]] bool recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void initialiseFragmentShadingRateSupport() noexcept;
+    void destroyTracyContext() noexcept;
 
     void destroySwapchain();
     void destroyRenderResources();

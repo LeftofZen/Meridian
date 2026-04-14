@@ -232,7 +232,6 @@ bool Engine::init()
         return false;
     }
     if (m_freeCameraController) {
-        m_world->setRenderDistanceChunks(m_renderStateStore.worldRenderDistanceChunks());
         m_world->setChunkGenerationDistanceChunks(
             m_renderStateStore.worldChunkGenerationDistanceChunks());
         m_world->setStreamingCamera(m_freeCameraController->cameraState());
@@ -292,8 +291,6 @@ void Engine::run()
                     ZoneName(systemName.data(), systemName.size());
                     system->update(deltaTimeSeconds);
                     if (system == m_freeCameraController.get() && m_world != nullptr) {
-                        m_world->setRenderDistanceChunks(
-                            m_renderStateStore.worldRenderDistanceChunks());
                         m_world->setChunkGenerationDistanceChunks(
                             m_renderStateStore.worldChunkGenerationDistanceChunks());
                         m_world->setStreamingCamera(m_freeCameraController->cameraState());

@@ -23,13 +23,12 @@ struct WorldRenderSnapshot {
     std::size_t residentChunkCount{0};
     std::size_t inFlightChunkCount{0};
     std::size_t pendingChunkCount{0};
-    std::size_t uploadedVoxelCount{0};
+    std::size_t uploadedOctreeNodeCount{0};
     std::uint64_t revision{0};
     std::vector<WorldChunkRenderData> chunks;
 };
 
 struct WorldRenderSettingsSnapshot {
-    float renderDistanceChunks{8.0F};
     float chunkGenerationDistanceChunks{8.0F};
     std::uint64_t revision{0};
 };
@@ -86,9 +85,9 @@ public:
         m_snapshot.world.inFlightChunkCount = inFlightChunkCount;
         m_snapshot.world.pendingChunkCount = pendingChunkCount;
         m_snapshot.world.revision = revision;
-        m_snapshot.world.uploadedVoxelCount = 0;
+        m_snapshot.world.uploadedOctreeNodeCount = 0;
         for (const WorldChunkRenderData& chunk : chunks) {
-            m_snapshot.world.uploadedVoxelCount += chunk.voxelCount();
+            m_snapshot.world.uploadedOctreeNodeCount += chunk.octreeNodeCount();
         }
         m_snapshot.world.chunks = std::move(chunks);
     }
@@ -97,18 +96,6 @@ public:
     {
         std::scoped_lock lock(m_mutex);
         m_snapshot.camera = camera;
-    }
-
-    void setWorldRenderDistanceChunks(float renderDistanceChunks)
-    {
-        std::scoped_lock lock(m_mutex);
-        const float clampedDistance = std::clamp(renderDistanceChunks, 1.0F, 32.0F);
-        if (std::abs(m_snapshot.worldRenderSettings.renderDistanceChunks - clampedDistance) < 0.001F) {
-            return;
-        }
-
-        m_snapshot.worldRenderSettings.renderDistanceChunks = clampedDistance;
-        ++m_snapshot.worldRenderSettings.revision;
     }
 
     void setWorldChunkGenerationDistanceChunks(float generationDistanceChunks)
@@ -123,12 +110,6 @@ public:
 
         m_snapshot.worldRenderSettings.chunkGenerationDistanceChunks = clampedDistance;
         ++m_snapshot.worldRenderSettings.revision;
-    }
-
-    [[nodiscard]] float worldRenderDistanceChunks() const
-    {
-        std::scoped_lock lock(m_mutex);
-        return m_snapshot.worldRenderSettings.renderDistanceChunks;
     }
 
     [[nodiscard]] float worldChunkGenerationDistanceChunks() const
