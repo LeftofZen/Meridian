@@ -125,6 +125,7 @@ target_sources(Meridian PRIVATE
     src/physics/PhysicsSystem.cpp
     src/networking/NetworkSystem.cpp
     src/scripting/ScriptingSystem.cpp
+    src/world/ChunkGenerationVisibility.cpp
     src/world/WorldChunkManager.cpp
     src/world/WorldChunkDatabase.cpp
     src/world/SparseVoxelOctree.cpp
