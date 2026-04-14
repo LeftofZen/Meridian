@@ -4,9 +4,83 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 
 namespace Meridian {
+
+namespace {
+
+[[nodiscard]] std::array<float, 3> normalizeDirection(std::array<float, 3> direction) noexcept
+{
+    const float lengthSquared =
+        direction[0] * direction[0] +
+        direction[1] * direction[1] +
+        direction[2] * direction[2];
+    if (lengthSquared <= 0.0001F) {
+        return {0.0F, 1.0F, 0.0F};
+    }
+
+    const float inverseLength = 1.0F / std::sqrt(lengthSquared);
+    return {
+        direction[0] * inverseLength,
+        direction[1] * inverseLength,
+        direction[2] * inverseLength,
+    };
+}
+
+void sanitizeLightingState(LightingRenderSnapshot& lighting) noexcept
+{
+    lighting.sun.direction = normalizeDirection(lighting.sun.direction);
+    lighting.sun.intensity = std::max(0.0F, lighting.sun.intensity);
+
+    if (lighting.pointLights.size() > kMaxPointLights) {
+        lighting.pointLights.resize(kMaxPointLights);
+    }
+    for (PointLightRenderState& light : lighting.pointLights) {
+        light.intensity = std::max(0.0F, light.intensity);
+        light.rangeMeters = std::max(0.1F, light.rangeMeters);
+    }
+
+    if (lighting.areaLights.size() > kMaxAreaLights) {
+        lighting.areaLights.resize(kMaxAreaLights);
+    }
+    for (AreaLightRenderState& light : lighting.areaLights) {
+        light.intensity = std::max(0.0F, light.intensity);
+    }
+}
+
+[[nodiscard]] PointLightRenderState makePointLight(const CameraRenderState& camera) noexcept
+{
+    return PointLightRenderState{
+        .positionMeters = {
+            camera.position[0] + camera.forward[0] * 8.0F,
+            camera.position[1] + camera.forward[1] * 8.0F,
+            camera.position[2] + camera.forward[2] * 8.0F,
+        },
+        .color = {1.0F, 0.85F, 0.65F},
+        .intensity = 1800.0F,
+        .rangeMeters = 24.0F,
+    };
+}
+
+[[nodiscard]] AreaLightRenderState makeAreaLight(const CameraRenderState& camera) noexcept
+{
+    return AreaLightRenderState{
+        .centerMeters = {
+            camera.position[0] + camera.forward[0] * 10.0F,
+            camera.position[1] + camera.forward[1] * 10.0F + 2.0F,
+            camera.position[2] + camera.forward[2] * 10.0F,
+        },
+        .rightExtentMeters = {4.0F, 0.0F, 0.0F},
+        .upExtentMeters = {0.0F, 0.0F, 2.5F},
+        .color = {1.0F, 0.96F, 0.88F},
+        .intensity = 6.0F,
+        .doubleSided = false,
+    };
+}
+
+} // namespace
 
 bool DebugOverlayRenderer::init(VulkanContext& context)
 {
@@ -139,6 +213,8 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         ImGui::TextUnformatted("Look: Hold Right Mouse / Arrow Keys");
         ImGui::TextUnformatted("Boost: Left Shift");
     }
+
+    buildLightingControls();
 
     if (m_getTerrainSettings && m_requestTerrainSettings) {
         ImGui::Separator();
@@ -325,5 +401,150 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
     }
 
     ImGui::End();
+}
+
+void DebugOverlayRenderer::buildLightingControls()
+{
+    if (m_renderStateStore == nullptr) {
+        return;
+    }
+
+    ImGui::Separator();
+    if (!ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    LightingRenderSnapshot lighting = m_renderStateSnapshot.lighting;
+    bool lightingChanged = false;
+
+    if (ImGui::TreeNode("Sun")) {
+        lightingChanged |= ImGui::DragFloat3(
+            "Direction",
+            lighting.sun.direction.data(),
+            0.01F,
+            -1.0F,
+            1.0F,
+            "%.2f");
+        lightingChanged |= ImGui::ColorEdit3("Color", lighting.sun.color.data());
+        lightingChanged |= ImGui::SliderFloat(
+            "Intensity",
+            &lighting.sun.intensity,
+            0.0F,
+            16.0F,
+            "%.2f");
+        ImGui::TreePop();
+    }
+
+    ImGui::Spacing();
+    ImGui::Text("Point Lights (%zu / %zu)", lighting.pointLights.size(), kMaxPointLights);
+    if (lighting.pointLights.size() < kMaxPointLights && ImGui::Button("Add Point Light")) {
+        lighting.pointLights.push_back(makePointLight(m_renderStateSnapshot.camera));
+        lightingChanged = true;
+    }
+
+    for (std::size_t index = 0; index < lighting.pointLights.size();) {
+        bool removedLight = false;
+        ImGui::PushID(static_cast<int>(index));
+        if (ImGui::TreeNode("Point Light")) {
+            PointLightRenderState& light = lighting.pointLights[index];
+            ImGui::Text("Index %zu", index);
+            lightingChanged |= ImGui::DragFloat3(
+                "Position (m)",
+                light.positionMeters.data(),
+                0.25F,
+                -2048.0F,
+                2048.0F,
+                "%.1f");
+            lightingChanged |= ImGui::ColorEdit3("Color", light.color.data());
+            lightingChanged |= ImGui::SliderFloat(
+                "Intensity",
+                &light.intensity,
+                1.0F,
+                10000.0F,
+                "%.1f",
+                ImGuiSliderFlags_Logarithmic);
+            lightingChanged |= ImGui::SliderFloat(
+                "Range (m)",
+                &light.rangeMeters,
+                0.5F,
+                128.0F,
+                "%.1f");
+            if (ImGui::Button("Remove")) {
+                lighting.pointLights.erase(lighting.pointLights.begin() + static_cast<std::ptrdiff_t>(index));
+                lightingChanged = true;
+                removedLight = true;
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+
+        if (!removedLight) {
+            ++index;
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Text("Area Lights (%zu / %zu)", lighting.areaLights.size(), kMaxAreaLights);
+    if (lighting.areaLights.size() < kMaxAreaLights && ImGui::Button("Add Area Light")) {
+        lighting.areaLights.push_back(makeAreaLight(m_renderStateSnapshot.camera));
+        lightingChanged = true;
+    }
+
+    for (std::size_t index = 0; index < lighting.areaLights.size();) {
+        bool removedLight = false;
+        ImGui::PushID(static_cast<int>(index + kMaxPointLights));
+        if (ImGui::TreeNode("Area Light")) {
+            AreaLightRenderState& light = lighting.areaLights[index];
+            ImGui::Text("Index %zu", index);
+            lightingChanged |= ImGui::DragFloat3(
+                "Center (m)",
+                light.centerMeters.data(),
+                0.25F,
+                -2048.0F,
+                2048.0F,
+                "%.1f");
+            lightingChanged |= ImGui::DragFloat3(
+                "Right Extent (m)",
+                light.rightExtentMeters.data(),
+                0.1F,
+                -64.0F,
+                64.0F,
+                "%.2f");
+            lightingChanged |= ImGui::DragFloat3(
+                "Up Extent (m)",
+                light.upExtentMeters.data(),
+                0.1F,
+                -64.0F,
+                64.0F,
+                "%.2f");
+            lightingChanged |= ImGui::ColorEdit3("Color", light.color.data());
+            lightingChanged |= ImGui::SliderFloat(
+                "Intensity",
+                &light.intensity,
+                0.0F,
+                24.0F,
+                "%.2f");
+            lightingChanged |= ImGui::Checkbox("Double Sided", &light.doubleSided);
+            if (ImGui::Button("Remove")) {
+                lighting.areaLights.erase(lighting.areaLights.begin() + static_cast<std::ptrdiff_t>(index));
+                lightingChanged = true;
+                removedLight = true;
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+
+        if (!removedLight) {
+            ++index;
+        }
+    }
+
+    if (!lightingChanged) {
+        return;
+    }
+
+    sanitizeLightingState(lighting);
+    m_renderStateStore->updateLightingState(lighting);
+    m_renderStateSnapshot.lighting = std::move(lighting);
 }
 } // namespace Meridian

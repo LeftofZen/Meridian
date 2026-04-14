@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <string_view>
 
@@ -42,6 +43,58 @@ constexpr std::array<std::string_view, 10> kSystemNames{
     }
 
     return cameraState;
+}
+
+[[nodiscard]] std::array<float, 3> normalizeDirection(std::array<float, 3> value) noexcept
+{
+    const float lengthSquared =
+        value[0] * value[0] + value[1] * value[1] + value[2] * value[2];
+    if (lengthSquared <= 0.0F) {
+        return {0.0F, 1.0F, 0.0F};
+    }
+
+    const float inverseLength = 1.0F / std::sqrt(lengthSquared);
+    return {
+        value[0] * inverseLength,
+        value[1] * inverseLength,
+        value[2] * inverseLength,
+    };
+}
+
+[[nodiscard]] LightingRenderSnapshot buildDefaultLightingState()
+{
+    LightingRenderSnapshot lighting{};
+    lighting.sun.direction = normalizeDirection({-0.35F, 0.82F, -0.28F});
+    lighting.sun.color = {1.0F, 0.95F, 0.84F};
+    lighting.sun.intensity = 4.5F;
+
+    lighting.pointLights = {
+        PointLightRenderState{
+            .positionMeters = {36.0F, 34.0F, 84.0F},
+            .color = {1.0F, 0.58F, 0.32F},
+            .intensity = 2600.0F,
+            .rangeMeters = 42.0F,
+        },
+        PointLightRenderState{
+            .positionMeters = {74.0F, 28.0F, 58.0F},
+            .color = {0.35F, 0.62F, 1.0F},
+            .intensity = 2100.0F,
+            .rangeMeters = 36.0F,
+        },
+    };
+
+    lighting.areaLights = {
+        AreaLightRenderState{
+            .centerMeters = {54.0F, 42.0F, 72.0F},
+            .rightExtentMeters = {5.0F, 0.0F, 0.0F},
+            .upExtentMeters = {0.0F, 0.0F, 3.0F},
+            .color = {1.0F, 0.94F, 0.82F},
+            .intensity = 6.0F,
+            .doubleSided = false,
+        },
+    };
+
+    return lighting;
 }
 
 } // namespace
@@ -172,6 +225,7 @@ bool Engine::init()
     m_worldSceneRenderer = std::make_unique<WorldSceneRenderer>();
     m_vulkan = std::make_unique<VulkanContext>(
         VulkanContextConfig{.appName = "Meridian", .enableValidation = true});
+    m_renderStateStore.updateLightingState(buildDefaultLightingState());
     m_pathTracerRenderer->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setRenderStateStore(m_renderStateStore);
     m_debugOverlay->setPathTracerSettings(m_pathTracerRenderer->settings());

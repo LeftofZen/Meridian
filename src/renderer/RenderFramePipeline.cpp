@@ -14,6 +14,20 @@
 
 namespace Meridian {
 
+namespace {
+
+PFN_vkVoidFunction imguiVulkanLoader(const char* functionName, void* userData)
+{
+    const auto* context = static_cast<const VulkanContext*>(userData);
+    if (context == nullptr || functionName == nullptr) {
+        return nullptr;
+    }
+
+    return vkGetInstanceProcAddr(context->getInstance(), functionName);
+}
+
+} // namespace
+
 RenderFramePipeline::~RenderFramePipeline()
 {
     shutdown();
@@ -64,6 +78,14 @@ bool RenderFramePipeline::init(SDL_Window* window, VulkanContext& context)
     initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     initInfo.CheckVkResultFn = checkVkResult;
     initInfo.MinAllocationSize = 1024 * 1024;
+
+    if (!ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3, imguiVulkanLoader, &context)) {
+        MRD_ERROR("ImGui Vulkan loader bootstrap failed");
+        destroyDescriptorPool();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
 
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
         MRD_ERROR("ImGui Vulkan backend init failed");

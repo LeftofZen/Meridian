@@ -34,6 +34,11 @@ constexpr VkViewport kDefaultViewport{};
     };
 }
 
+[[nodiscard]] std::array<float, 4> packVec4(const std::array<float, 3>& value, float w) noexcept
+{
+    return {value[0], value[1], value[2], w};
+}
+
 } // namespace
 
 bool PathTracerRenderer::init(VulkanContext& context)
@@ -91,14 +96,15 @@ void PathTracerRenderer::beginFrame()
         const std::array<std::int32_t, 3> currentCameraChunkCoord = cameraChunkCoord(
             m_renderStateSnapshot.camera,
             frameResources.chunkResolution);
-        const bool worldChanged =
+        const bool sceneChanged =
             m_renderStateSnapshot.world.revision != frameResources.worldRevision ||
+            m_renderStateSnapshot.lighting.revision != frameResources.lightingRevision ||
             m_renderStateSnapshot.worldRenderSettings.revision != frameResources.renderSettingsRevision ||
             currentCameraChunkCoord != frameResources.cameraChunkCoord;
 
-        if (worldChanged) {
-            if (!uploadWorldData(frameResources)) {
-                MRD_WARN("Path tracer world upload failed");
+        if (sceneChanged) {
+            if (!uploadSceneData(frameResources)) {
+                MRD_WARN("Path tracer scene upload failed");
             }
         }
     }
@@ -242,11 +248,17 @@ bool PathTracerRenderer::createDescriptorResources()
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        VkDescriptorSetLayoutBinding{
+            .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
+    layoutInfo.bindingCount = 4;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(
@@ -266,7 +278,7 @@ bool PathTracerRenderer::createDescriptorResources()
     const VkDescriptorPoolSize poolSizes[] = {
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = static_cast<std::uint32_t>(frameCount * 3U),
+            .descriptorCount = static_cast<std::uint32_t>(frameCount * 4U),
         },
     };
 
@@ -461,7 +473,7 @@ bool PathTracerRenderer::createPipeline()
     return true;
 }
 
-bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
+bool PathTracerRenderer::uploadSceneData(FrameResources& frameResources)
 {
     if (m_context == nullptr || frameResources.descriptorSet == VK_NULL_HANDLE) {
         return false;
@@ -476,8 +488,43 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
     std::vector<GpuChunkRecord> chunkRecords;
     std::vector<std::uint32_t> octreeNodeWords;
     std::vector<std::uint32_t> chunkLookup;
+    GpuLightScene lightScene{};
     chunkRecords.reserve(m_renderStateSnapshot.world.chunks.size());
     octreeNodeWords.reserve(m_renderStateSnapshot.world.uploadedOctreeNodeCount * 9U);
+
+    lightScene.sun.directionAndIntensity = packVec4(
+        m_renderStateSnapshot.lighting.sun.direction,
+        m_renderStateSnapshot.lighting.sun.intensity);
+    lightScene.sun.color = packVec4(m_renderStateSnapshot.lighting.sun.color, 0.0F);
+
+    const std::size_t pointLightCount = std::min(
+        m_renderStateSnapshot.lighting.pointLights.size(),
+        static_cast<std::size_t>(kMaxPointLights));
+    const std::size_t areaLightCount = std::min(
+        m_renderStateSnapshot.lighting.areaLights.size(),
+        static_cast<std::size_t>(kMaxAreaLights));
+    lightScene.counts = {
+        static_cast<std::uint32_t>(pointLightCount),
+        static_cast<std::uint32_t>(areaLightCount),
+        0U,
+        0U,
+    };
+
+    for (std::size_t index = 0; index < pointLightCount; ++index) {
+        const PointLightRenderState& light = m_renderStateSnapshot.lighting.pointLights[index];
+        lightScene.pointLights[index].positionAndRange = packVec4(light.positionMeters, light.rangeMeters);
+        lightScene.pointLights[index].colorAndIntensity = packVec4(light.color, light.intensity);
+    }
+
+    for (std::size_t index = 0; index < areaLightCount; ++index) {
+        const AreaLightRenderState& light = m_renderStateSnapshot.lighting.areaLights[index];
+        lightScene.areaLights[index].centerAndIntensity = packVec4(light.centerMeters, light.intensity);
+        lightScene.areaLights[index].rightExtentAndDoubleSided = packVec4(
+            light.rightExtentMeters,
+            light.doubleSided ? 1.0F : 0.0F);
+        lightScene.areaLights[index].upExtent = packVec4(light.upExtentMeters, 0.0F);
+        lightScene.areaLights[index].color = packVec4(light.color, 0.0F);
+    }
 
     std::array<float, 3> sceneMin{
         std::numeric_limits<float>::max(),
@@ -596,6 +643,7 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
     frameResources.sceneMin = sceneMin;
     frameResources.sceneMax = sceneMax;
     frameResources.worldRevision = m_renderStateSnapshot.world.revision;
+    frameResources.lightingRevision = m_renderStateSnapshot.lighting.revision;
     frameResources.cameraChunkCoord = currentCameraChunkCoord;
     frameResources.renderSettingsRevision = m_renderStateSnapshot.worldRenderSettings.revision;
 
@@ -605,10 +653,12 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
         static_cast<VkDeviceSize>(octreeNodeWords.size() * sizeof(std::uint32_t));
     const VkDeviceSize chunkLookupBufferSize =
         static_cast<VkDeviceSize>(chunkLookup.size() * sizeof(std::uint32_t));
+    const VkDeviceSize lightBufferSize = static_cast<VkDeviceSize>(sizeof(GpuLightScene));
 
     if (!ensureBufferCapacity(frameResources.chunkBuffer, chunkBufferSize) ||
         !ensureBufferCapacity(frameResources.octreeBuffer, octreeBufferSize) ||
-        !ensureBufferCapacity(frameResources.chunkLookupBuffer, chunkLookupBufferSize)) {
+        !ensureBufferCapacity(frameResources.chunkLookupBuffer, chunkLookupBufferSize) ||
+        !ensureBufferCapacity(frameResources.lightBuffer, lightBufferSize)) {
         return false;
     }
 
@@ -643,6 +693,16 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
     std::memcpy(mappedData, chunkLookup.data(), static_cast<std::size_t>(chunkLookupBufferSize));
     vkUnmapMemory(m_context->getDevice(), frameResources.chunkLookupBuffer.memory);
 
+    vkMapMemory(
+        m_context->getDevice(),
+        frameResources.lightBuffer.memory,
+        0,
+        lightBufferSize,
+        0,
+        &mappedData);
+    std::memcpy(mappedData, &lightScene, static_cast<std::size_t>(lightBufferSize));
+    vkUnmapMemory(m_context->getDevice(), frameResources.lightBuffer.memory);
+
     const VkDescriptorBufferInfo chunkBufferInfo{
         .buffer = frameResources.chunkBuffer.buffer,
         .offset = 0,
@@ -657,6 +717,11 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
         .buffer = frameResources.chunkLookupBuffer.buffer,
         .offset = 0,
         .range = chunkLookupBufferSize,
+    };
+    const VkDescriptorBufferInfo lightBufferInfo{
+        .buffer = frameResources.lightBuffer.buffer,
+        .offset = 0,
+        .range = lightBufferSize,
     };
 
     const VkWriteDescriptorSet writes[] = {
@@ -684,9 +749,17 @@ bool PathTracerRenderer::uploadWorldData(FrameResources& frameResources)
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .pBufferInfo = &chunkLookupBufferInfo,
         },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.descriptorSet,
+            .dstBinding = 3,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo = &lightBufferInfo,
+        },
     };
 
-    vkUpdateDescriptorSets(m_context->getDevice(), 3, writes, 0, nullptr);
+    vkUpdateDescriptorSets(m_context->getDevice(), 4, writes, 0, nullptr);
     return true;
 }
 
@@ -774,6 +847,7 @@ void PathTracerRenderer::destroyDescriptorResources() noexcept
         destroyBuffer(frameResources.chunkBuffer);
         destroyBuffer(frameResources.octreeBuffer);
         destroyBuffer(frameResources.chunkLookupBuffer);
+        destroyBuffer(frameResources.lightBuffer);
         frameResources.descriptorSet = VK_NULL_HANDLE;
     }
     m_frameResources.clear();

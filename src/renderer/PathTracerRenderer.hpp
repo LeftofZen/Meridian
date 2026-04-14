@@ -39,6 +39,30 @@ public:
     void recordFrame(VkCommandBuffer commandBuffer) override;
 
 private:
+    struct alignas(16) GpuDirectionalLight {
+        std::array<float, 4> directionAndIntensity{};
+        std::array<float, 4> color{};
+    };
+
+    struct alignas(16) GpuPointLight {
+        std::array<float, 4> positionAndRange{};
+        std::array<float, 4> colorAndIntensity{};
+    };
+
+    struct alignas(16) GpuAreaLight {
+        std::array<float, 4> centerAndIntensity{};
+        std::array<float, 4> rightExtentAndDoubleSided{};
+        std::array<float, 4> upExtent{};
+        std::array<float, 4> color{};
+    };
+
+    struct alignas(16) GpuLightScene {
+        std::array<std::uint32_t, 4> counts{};
+        GpuDirectionalLight sun;
+        std::array<GpuPointLight, kMaxPointLights> pointLights{};
+        std::array<GpuAreaLight, kMaxAreaLights> areaLights{};
+    };
+
     struct alignas(16) GpuChunkRecord {
         std::int32_t coordX{0};
         std::int32_t coordY{0};
@@ -72,9 +96,11 @@ private:
         GpuBuffer chunkBuffer;
         GpuBuffer octreeBuffer;
         GpuBuffer chunkLookupBuffer;
+        GpuBuffer lightBuffer;
         std::size_t uploadedChunkCount{0};
         std::size_t uploadedOctreeNodeCount{0};
         std::uint64_t worldRevision{~0ULL};
+        std::uint64_t lightingRevision{~0ULL};
         std::array<float, 3> sceneMin{-1.0F, -1.0F, -1.0F};
         std::array<float, 3> sceneMax{1.0F, 1.0F, 1.0F};
         std::array<std::int32_t, 3> chunkGridOrigin{0, 0, 0};
@@ -86,7 +112,7 @@ private:
 
     [[nodiscard]] bool createDescriptorResources();
     [[nodiscard]] bool createPipeline();
-    [[nodiscard]] bool uploadWorldData(FrameResources& frameResources);
+    [[nodiscard]] bool uploadSceneData(FrameResources& frameResources);
     [[nodiscard]] bool ensureBufferCapacity(GpuBuffer& buffer, VkDeviceSize sizeInBytes);
     [[nodiscard]] bool createBuffer(
         VkDeviceSize sizeInBytes,

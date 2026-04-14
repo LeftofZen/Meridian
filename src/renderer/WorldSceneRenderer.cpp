@@ -354,6 +354,10 @@ void WorldSceneRenderer::beginFrame()
         static_cast<unsigned long long>(m_renderStateSnapshot.world.inFlightChunkCount));
     ImGui::Text("Queued chunks: %llu",
         static_cast<unsigned long long>(m_renderStateSnapshot.world.pendingChunkCount));
+    ImGui::Text(
+        "Lights: %zu point, %zu area",
+        m_renderStateSnapshot.lighting.pointLights.size(),
+        m_renderStateSnapshot.lighting.areaLights.size());
     ImGui::Spacing();
     ImGui::TextWrapped(
         "This module now consumes a render-state snapshot, which is the place to grow world-facing data like camera state, lighting state, and GPU residency without coupling scene rendering to the simulation thread.");

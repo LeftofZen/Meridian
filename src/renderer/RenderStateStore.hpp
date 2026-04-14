@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/CameraState.hpp"
+#include "renderer/LightingState.hpp"
 #include "world/WorldRenderData.hpp"
 
 #include <algorithm>
@@ -38,6 +39,7 @@ struct RenderStateSnapshot {
     WorldRenderSnapshot world;
     WorldRenderSettingsSnapshot worldRenderSettings;
     CameraRenderState camera;
+    LightingRenderSnapshot lighting;
 };
 
 class RenderStateStore {
@@ -96,6 +98,13 @@ public:
     {
         std::scoped_lock lock(m_mutex);
         m_snapshot.camera = camera;
+    }
+
+    void updateLightingState(LightingRenderSnapshot lighting)
+    {
+        std::scoped_lock lock(m_mutex);
+        lighting.revision = m_snapshot.lighting.revision + 1;
+        m_snapshot.lighting = std::move(lighting);
     }
 
     void setWorldChunkGenerationDistanceChunks(float generationDistanceChunks)
