@@ -8,6 +8,7 @@
       "name": "sdl3",
       "features": ["vulkan"]
     },
+    "sdl3-image",
     "volk",
     "joltphysics",
     "entt",

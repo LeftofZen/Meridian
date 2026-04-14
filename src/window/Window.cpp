@@ -3,6 +3,36 @@
 #include "core/Logger.hpp"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3_image/SDL_image.h>
+
+#include <filesystem>
+
+namespace {
+
+constexpr const char* kWindowIconFileName = "meridian-icon.png";
+
+void SetWindowIcon(SDL_Window* window)
+{
+    const char* const basePath = SDL_GetBasePath();
+    if (basePath == nullptr) {
+        MRD_WARN("SDL_GetBasePath failed while locating the window icon: {}", SDL_GetError());
+        return;
+    }
+
+    const std::filesystem::path iconPath = std::filesystem::path(basePath) / kWindowIconFileName;
+    SDL_Surface* iconSurface = IMG_Load(iconPath.string().c_str());
+
+    if (iconSurface == nullptr) {
+        MRD_WARN("Failed to load window icon '{}': {}", iconPath.string(), SDL_GetError());
+        return;
+    }
+
+    SDL_SetWindowIcon(window, iconSurface);
+    SDL_DestroySurface(iconSurface);
+}
+
+} // namespace
 
 namespace Meridian {
 
@@ -20,6 +50,12 @@ bool Window::init()
         return false;
     }
 
+    if ((IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG) != IMG_INIT_PNG) {
+        MRD_ERROR("IMG_Init failed to enable PNG support: {}", SDL_GetError());
+        SDL_Quit();
+        return false;
+    }
+
     m_window = SDL_CreateWindow(
         m_config.title.c_str(),
         m_config.width,
@@ -28,9 +64,12 @@ bool Window::init()
 
     if (!m_window) {
         MRD_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
+        IMG_Quit();
         SDL_Quit();
         return false;
     }
+
+    SetWindowIcon(m_window);
 
     MRD_INFO("Window '{}' created ({}x{})", m_config.title, m_config.width, m_config.height);
     return true;
@@ -40,6 +79,7 @@ void Window::shutdown()
 {
     if (m_window) {
         SDL_DestroyWindow(m_window);
+        IMG_Quit();
         SDL_Quit();
         m_window = nullptr;
     }

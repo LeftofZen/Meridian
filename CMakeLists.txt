@@ -25,6 +25,7 @@ if (MSVC_VERSION LESS 1950 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 endif()
 
 find_package(SDL3 CONFIG REQUIRED)
+find_package(SDL3_image CONFIG REQUIRED)
 find_package(volk CONFIG REQUIRED)
 find_package(Jolt CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
@@ -174,6 +175,7 @@ target_include_directories(Meridian PRIVATE
 
 target_link_libraries(Meridian PRIVATE
     SDL3::SDL3
+    SDL3_image::SDL3_image
     volk::volk
     Jolt::Jolt
     EnTT::EnTT
@@ -199,6 +201,9 @@ if (WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_RUNTIME_DLLS:Meridian>
             $<TARGET_FILE_DIR:Meridian>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/meridian-icon.png"
+            $<TARGET_FILE_DIR:Meridian>/meridian-icon.png
         COMMAND_EXPAND_LISTS
     )
 
