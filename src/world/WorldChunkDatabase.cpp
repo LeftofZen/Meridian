@@ -329,9 +329,8 @@ std::optional<WorldChunkStorage> WorldChunkDatabase::loadChunk(
             return std::nullopt;
         }
 
-        rawBytes.assign(
-            static_cast<const std::uint8_t*>(databaseValue.mv_data),
-            static_cast<const std::uint8_t*>(databaseValue.mv_data) + databaseValue.mv_size);
+        rawBytes.resize(databaseValue.mv_size);
+        std::memcpy(rawBytes.data(), databaseValue.mv_data, databaseValue.mv_size);
         mdb_txn_abort(transaction);
     }
 
