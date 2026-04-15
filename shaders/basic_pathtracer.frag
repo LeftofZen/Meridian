@@ -59,6 +59,8 @@ const float kTreeGridSize = 6.0;
 const float kTreeChanceThreshold = 0.80;
 const float kRngNormalizationFactor = 4294967296.0;
 const mat2 kFbmRotation = mat2(1.6, -1.2, 1.2, 1.6);
+const float kDefaultSunIntensity = 6.0;
+const vec2 kRngUvSeed = vec2(13.0, 17.0);
 const float kRayMarchMinStep = 0.04;
 const float kRayMarchMaxStep = 1.25;
 const int kBinaryRefinementSteps = 6;
@@ -238,7 +240,7 @@ vec3 sunColor()
 
 float sunIntensity()
 {
-    return max(lights.sun.directionAndIntensity.w, 6.0);
+    return max(lights.sun.directionAndIntensity.w, kDefaultSunIntensity);
 }
 
 vec3 skyBaseColor(vec3 direction)
@@ -633,7 +635,7 @@ void main()
         uint(pixel.x) * 1973u ^
         uint(pixel.y) * 9277u ^
         (pc.settings.x + 1u) * 26699u ^
-        uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * kRngNormalizationFactor);
+        uint(hash11(float(pc.settings.x) + dot(inUv, kRngUvSeed)) * kRngNormalizationFactor);
 
     vec3 forward = normalize(pc.cameraForward.xyz);
     vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : kWorldUp;
