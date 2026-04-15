@@ -57,7 +57,8 @@ const float kTerrainRidgeAmplitude = 9.0;
 const float kTerrainDetailAmplitude = 10.0;
 const float kTreeGridSize = 6.0;
 const float kTreeChanceThreshold = 0.80;
-const float kRngHashScale = 4294967295.0;
+const float kRngNormalizationFactor = 4294967296.0;
+const mat2 kFbmRotation = mat2(1.6, -1.2, 1.2, 1.6);
 const float kRayMarchMinStep = 0.04;
 const float kRayMarchMaxStep = 1.25;
 const int kBinaryRefinementSteps = 6;
@@ -107,13 +108,13 @@ uint hash(uint state)
 
 float hash11(float value)
 {
-    return float(hash(floatBitsToUint(value))) / 4294967296.0;
+    return float(hash(floatBitsToUint(value))) / kRngNormalizationFactor;
 }
 
 float hash21(vec2 value)
 {
     uvec2 bits = floatBitsToUint(value);
-    return float(hash(bits.x ^ hash(bits.y + 0x9e3779b9u))) / 4294967296.0;
+    return float(hash(bits.x ^ hash(bits.y + 0x9e3779b9u))) / kRngNormalizationFactor;
 }
 
 float hash31(vec3 value)
@@ -122,13 +123,13 @@ float hash31(vec3 value)
     uint state = bits.x;
     state ^= hash(bits.y + 0x9e3779b9u);
     state ^= hash(bits.z + 0x7f4a7c15u);
-    return float(hash(state)) / 4294967296.0;
+    return float(hash(state)) / kRngNormalizationFactor;
 }
 
 float randomFloat(inout uint state)
 {
     state = hash(state);
-    return float(state) / 4294967296.0;
+    return float(state) / kRngNormalizationFactor;
 }
 
 float valueNoise(vec2 position)
@@ -173,10 +174,9 @@ float fbm(vec2 position)
 {
     float amplitude = 0.5;
     float value = 0.0;
-    mat2 rotation = mat2(1.6, -1.2, 1.2, 1.6);
     for (int octave = 0; octave < 5; ++octave) {
         value += amplitude * valueNoise(position);
-        position = rotation * position;
+        position = kFbmRotation * position;
         amplitude *= 0.5;
     }
 
@@ -633,7 +633,7 @@ void main()
         uint(pixel.x) * 1973u ^
         uint(pixel.y) * 9277u ^
         (pc.settings.x + 1u) * 26699u ^
-        uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * kRngHashScale);
+        uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * kRngNormalizationFactor);
 
     vec3 forward = normalize(pc.cameraForward.xyz);
     vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : kWorldUp;
