@@ -36,6 +36,7 @@ public:
     void shutdown() override;
     void configureFrame(RenderFrameConfig& config) override;
     void beginFrame() override;
+    void recordPreRender(VkCommandBuffer commandBuffer) override;
     void recordFrame(VkCommandBuffer commandBuffer) override;
 
 private:
@@ -80,6 +81,12 @@ private:
         VkDeviceSize size{0};
     };
 
+    struct GpuImage {
+        VkImage image{VK_NULL_HANDLE};
+        VkDeviceMemory memory{VK_NULL_HANDLE};
+        VkImageView view{VK_NULL_HANDLE};
+    };
+
     struct PushConstants {
         std::array<float, 4> sceneMin{};
         std::array<float, 4> sceneMax{};
@@ -91,12 +98,21 @@ private:
         std::array<std::uint32_t, 4> chunkGridSize{};
     };
 
+    struct DenoisePushConstants {
+        std::array<std::uint32_t, 4> toggles{1U, 0U, 0U, 0U};
+        std::array<float, 4> filterParameters0{3.0F, 1.0F, 0.5F, 8.0F};
+    };
+
     struct FrameResources {
         VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+        VkDescriptorSet denoiseDescriptorSet{VK_NULL_HANDLE};
         GpuBuffer chunkBuffer;
         GpuBuffer octreeBuffer;
         GpuBuffer chunkLookupBuffer;
         GpuBuffer lightBuffer;
+        GpuImage traceColor;
+        GpuImage traceGuide;
+        VkFramebuffer traceFramebuffer{VK_NULL_HANDLE};
         std::size_t uploadedChunkCount{0};
         std::size_t uploadedOctreeNodeCount{0};
         std::uint64_t worldRevision{~0ULL};
@@ -111,7 +127,11 @@ private:
     };
 
     [[nodiscard]] bool createDescriptorResources();
+    [[nodiscard]] bool createTraceRenderPass();
+    [[nodiscard]] bool createTraceTargets();
+    [[nodiscard]] bool createTraceTarget(FrameResources& frameResources);
     [[nodiscard]] bool createPipeline();
+    [[nodiscard]] bool createDenoisePipeline();
     [[nodiscard]] bool uploadSceneData(FrameResources& frameResources);
     [[nodiscard]] bool ensureBufferCapacity(GpuBuffer& buffer, VkDeviceSize sizeInBytes);
     [[nodiscard]] bool createBuffer(
@@ -119,22 +139,32 @@ private:
         VkBufferUsageFlags usage,
         VkMemoryPropertyFlags properties,
         GpuBuffer& buffer);
+    [[nodiscard]] bool createImage(
+        VkExtent2D extent,
+        VkFormat format,
+        VkImageUsageFlags usage,
+        GpuImage& image);
     void destroyBuffer(GpuBuffer& buffer) noexcept;
+    void destroyImage(GpuImage& image) noexcept;
     void destroyPipeline() noexcept;
     void destroyDescriptorResources() noexcept;
     [[nodiscard]] std::uint32_t findMemoryType(
         std::uint32_t typeFilter,
         VkMemoryPropertyFlags properties) const;
-    [[nodiscard]] static std::filesystem::path shaderPath(const char* fileName);
-
     VulkanContext* m_context{nullptr};
     RenderStateStore* m_renderStateStore{nullptr};
     RenderStateSnapshot m_renderStateSnapshot;
     PathTracerSettings m_settings;
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
+    VkRenderPass m_traceRenderPass{VK_NULL_HANDLE};
     VkPipelineLayout m_pipelineLayout{VK_NULL_HANDLE};
     VkPipeline m_pipeline{VK_NULL_HANDLE};
+    VkDescriptorSetLayout m_denoiseDescriptorSetLayout{VK_NULL_HANDLE};
+    VkDescriptorPool m_denoiseDescriptorPool{VK_NULL_HANDLE};
+    VkPipelineLayout m_denoisePipelineLayout{VK_NULL_HANDLE};
+    VkPipeline m_denoisePipeline{VK_NULL_HANDLE};
+    VkSampler m_denoiseSampler{VK_NULL_HANDLE};
     std::vector<FrameResources> m_frameResources;
     std::size_t m_currentFrameSlot{0};
     std::uint32_t m_frameIndex{0};

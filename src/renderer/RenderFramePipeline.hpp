@@ -24,6 +24,7 @@ public:
     void shutdown() override;
     void handleEvent(const SDL_Event& event) override;
     void beginFrame() override;
+    void recordPreRender(VkCommandBuffer commandBuffer) override;
     void recordFrame(VkCommandBuffer commandBuffer) override;
     [[nodiscard]] const RenderFrameConfig& getFrameConfig() const noexcept override
     {

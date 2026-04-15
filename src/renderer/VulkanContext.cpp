@@ -1056,6 +1056,10 @@ bool VulkanContext::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearValue;
 
+    if (m_renderFrontend != nullptr) {
+        m_renderFrontend->recordPreRender(commandBuffer);
+    }
+
     {
         if (m_tracyVkContext != nullptr) {
             TracyVkZone(m_tracyVkContext, commandBuffer, "Swapchain Render Pass");

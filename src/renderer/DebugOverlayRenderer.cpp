@@ -206,6 +206,65 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
             m_pathTracerSettings->clamp();
         }
 
+        if (ImGui::Button(
+                m_pathTracerSettings->denoiserEnabled
+                    ? "Denoiser: On"
+                    : "Denoiser: Off")) {
+            m_pathTracerSettings->denoiserEnabled = !m_pathTracerSettings->denoiserEnabled;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            "%s",
+            m_pathTracerSettings->denoiserEnabled
+                ? "Filtering active"
+                : "Showing raw path traced output");
+
+        float denoiserKernelStep = m_pathTracerSettings->denoiserKernelStep;
+        if (ImGui::SliderFloat("Denoise Kernel Step", &denoiserKernelStep, 0.5F, 8.0F, "%.2f")) {
+            m_pathTracerSettings->denoiserKernelStep = denoiserKernelStep;
+            m_pathTracerSettings->clamp();
+        }
+
+        float denoiserColorPhi = m_pathTracerSettings->denoiserColorPhi;
+        if (ImGui::SliderFloat("Denoise Color Phi", &denoiserColorPhi, 0.01F, 8.0F, "%.2f")) {
+            m_pathTracerSettings->denoiserColorPhi = denoiserColorPhi;
+            m_pathTracerSettings->clamp();
+        }
+
+        float denoiserNormalPhi = m_pathTracerSettings->denoiserNormalPhi;
+        if (ImGui::SliderFloat("Denoise Normal Phi", &denoiserNormalPhi, 0.01F, 8.0F, "%.2f")) {
+            m_pathTracerSettings->denoiserNormalPhi = denoiserNormalPhi;
+            m_pathTracerSettings->clamp();
+        }
+
+        float denoiserDifferenceGain = m_pathTracerSettings->denoiserDifferenceGain;
+        if (ImGui::SliderFloat(
+                "Denoise Difference Gain",
+                &denoiserDifferenceGain,
+                1.0F,
+                32.0F,
+                "%.1f")) {
+            m_pathTracerSettings->denoiserDifferenceGain = denoiserDifferenceGain;
+            m_pathTracerSettings->clamp();
+        }
+
+        static constexpr const char* kDenoiserDebugViewLabels[] = {
+            "Filtered",
+            "Raw",
+            "Difference",
+            "Split Screen",
+        };
+        int denoiserDebugView = m_pathTracerSettings->denoiserDebugView;
+        if (ImGui::SliderInt(
+                "Denoise Debug View",
+                &denoiserDebugView,
+                PathTracerSettings::kDenoiserDebugViewFiltered,
+                PathTracerSettings::kDenoiserDebugViewSplitScreen,
+                kDenoiserDebugViewLabels[denoiserDebugView])) {
+            m_pathTracerSettings->denoiserDebugView = denoiserDebugView;
+            m_pathTracerSettings->clamp();
+        }
+
         ImGui::Spacing();
         ImGui::TextUnformatted("Camera Controls");
         ImGui::TextUnformatted("Move: W A S D");

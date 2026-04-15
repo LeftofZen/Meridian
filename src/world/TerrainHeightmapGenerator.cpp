@@ -396,9 +396,7 @@ bool TerrainHeightmapGenerator::createPipeline()
     }
 
     ShaderLibrary& shaderLibrary = m_context->getShaderLibrary();
-    const VkShaderModule computeShader = shaderLibrary.loadModule(
-        "terrain_heightmap.comp",
-        shaderPath("terrain_heightmap.comp.spv"));
+    const VkShaderModule computeShader = shaderLibrary.loadBuiltInModule("terrain_heightmap.comp");
     if (computeShader == VK_NULL_HANDLE) {
         MRD_ERROR("Terrain heightmap compute shader load failed");
         return false;
@@ -650,11 +648,6 @@ std::uint32_t TerrainHeightmapGenerator::findMemoryType(
 ChunkKey TerrainHeightmapGenerator::tileKey(ChunkCoord coord) noexcept
 {
     return makeChunkKey(ChunkCoord{.x = coord.x, .y = 0, .z = coord.z});
-}
-
-std::filesystem::path TerrainHeightmapGenerator::shaderPath(const char* fileName)
-{
-    return std::filesystem::path{MERIDIAN_SHADER_OUTPUT_DIR} / fileName;
 }
 
 } // namespace Meridian

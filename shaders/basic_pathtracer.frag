@@ -2,6 +2,7 @@
 
 layout(location = 0) in vec2 inUv;
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outGuide;
 
 struct GpuChunk {
     ivec4 coordAndResolution;
@@ -660,6 +661,33 @@ vec3 tracePath(Ray ray, inout uint rngState)
     return radiance;
 }
 
+vec4 primarySurfaceGuide(
+    vec2 pixel,
+    vec3 forward,
+    vec3 right,
+    vec3 up,
+    float aspectRatio,
+    float tanHalfFov)
+{
+    vec2 ndc = (pixel / pc.frameData.xy) * 2.0 - 1.0;
+    ndc.x *= aspectRatio;
+    ndc.y = -ndc.y;
+
+    Ray ray;
+    ray.origin = pc.cameraPosition.xyz;
+    ray.direction = normalize(
+        forward +
+        right * (ndc.x * tanHalfFov) +
+        up * (ndc.y * tanHalfFov));
+
+    Hit hit;
+    if (sceneIntersect(ray, hit)) {
+        return vec4(hit.normal * 0.5 + 0.5, 1.0);
+    }
+
+    return vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
+}
+
 void main()
 {
     const vec2 pixel = gl_FragCoord.xy;
@@ -674,6 +702,14 @@ void main()
     const vec3 up = normalize(cross(right, forward));
     const float aspectRatio = max(pc.frameData.w, 0.01);
     const float tanHalfFov = tan(radians(max(pc.frameData.z, 1.0)) * 0.5);
+
+    outGuide = primarySurfaceGuide(
+        pixel,
+        forward,
+        right,
+        up,
+        aspectRatio,
+        tanHalfFov);
 
     vec3 color = vec3(0.0);
     const uint sampleCount = max(pc.settings.y, 1u);
@@ -694,7 +730,5 @@ void main()
     }
 
     color /= float(sampleCount);
-    color = color / (vec3(1.0) + color);
-    color = pow(color, vec3(1.0 / 2.2));
     outColor = vec4(color, 1.0);
 }

@@ -197,6 +197,26 @@ void RenderFramePipeline::beginFrame()
     }
 }
 
+void RenderFramePipeline::recordPreRender(VkCommandBuffer commandBuffer)
+{
+    if (!m_initialised.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const TracyVkCtx tracyVkContext = m_context != nullptr ? m_context->tracyVkContext() : nullptr;
+    for (IRenderFeature* feature : m_features) {
+        if (feature != nullptr) {
+            ZoneScopedN("IRenderFeature::recordPreRender");
+            const char* featureName = feature->name();
+            ZoneName(featureName, std::strlen(featureName));
+            if (tracyVkContext != nullptr) {
+                TracyVkZone(tracyVkContext, commandBuffer, "Render Feature Pre-pass");
+            }
+            feature->recordPreRender(commandBuffer);
+        }
+    }
+}
+
 void RenderFramePipeline::recordFrame(VkCommandBuffer commandBuffer)
 {
     if (!m_initialised.load(std::memory_order_acquire)) {

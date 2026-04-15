@@ -50,12 +50,6 @@ bool Window::init()
         return false;
     }
 
-    if ((IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG) != IMG_INIT_PNG) {
-        MRD_ERROR("IMG_Init failed to enable PNG support: {}", SDL_GetError());
-        SDL_Quit();
-        return false;
-    }
-
     m_window = SDL_CreateWindow(
         m_config.title.c_str(),
         m_config.width,
@@ -64,7 +58,6 @@ bool Window::init()
 
     if (!m_window) {
         MRD_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
-        IMG_Quit();
         SDL_Quit();
         return false;
     }
@@ -79,7 +72,6 @@ void Window::shutdown()
 {
     if (m_window) {
         SDL_DestroyWindow(m_window);
-        IMG_Quit();
         SDL_Quit();
         m_window = nullptr;
     }

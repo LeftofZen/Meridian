@@ -59,6 +59,7 @@ file(TO_CMAKE_PATH "${MERIDIAN_SHADER_OUTPUT_DIR}" MERIDIAN_SHADER_OUTPUT_DIR_CM
 set(MERIDIAN_SHADER_SOURCES
     shaders/fullscreen_triangle.vert
     shaders/basic_pathtracer.frag
+    shaders/pathtracer_denoise.frag
     shaders/terrain_heightmap.comp
 )
 
