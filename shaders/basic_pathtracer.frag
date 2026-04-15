@@ -48,6 +48,7 @@ const float kTerrainHeightOffset = 8.0;
 const float kTerrainTerraceScale = 0.5;
 const float kTerrainTerraceHeight = 2.0;
 const float kRayMarchStepMultiplier = 0.7;
+const float kTerrainDistanceClamp = -4.0;
 const float kRayMarchMinStep = 0.04;
 const float kRayMarchMaxStep = 1.25;
 const int kBinaryRefinementSteps = 6;
@@ -200,7 +201,7 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
     float theta = 6.28318530718 * u2;
 
     vec3 tangentSeed = abs(normal.y) > 0.5 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-    vec3 tangent = normalize(cross(tangentSeed, normal));
+    vec3 tangent = normalize(cross(normal, tangentSeed));
     vec3 bitangent = cross(normal, tangent);
     vec3 localDirection = vec3(radius * cos(theta), sqrt(max(0.0, 1.0 - u1)), radius * sin(theta));
     return tangent * localDirection.x + normal * localDirection.y + bitangent * localDirection.z;
@@ -357,7 +358,7 @@ DistanceSample sceneDistance(vec3 position)
     uint bestMaterialId = kMaterialAir;
 
     float localHeight = terrainHeight(floor(position.xz));
-    bestDistance = min(bestDistance, max(position.y - (localHeight + 1.0), -4.0));
+    bestDistance = min(bestDistance, max(position.y - (localHeight + 1.0), kTerrainDistanceClamp));
 
     for (int offsetZ = -1; offsetZ <= 1; ++offsetZ) {
         for (int offsetY = -2; offsetY <= 2; ++offsetY) {
@@ -424,7 +425,7 @@ bool sceneIntersect(Ray ray, float maxDistance, out Hit hit)
             hit.t = upper;
             hit.position = ray.origin + ray.direction * hit.t;
             hit.normal = estimateNormal(hit.position);
-            hit.material = sceneDistance(hit.position - hit.normal * (kHitThreshold * 1.5)).material;
+            hit.material = marchSample.material;
             hit.albedo = materialAlbedo(hit.material, hit.position);
             return true;
         }
@@ -622,7 +623,7 @@ void main()
         uint(pixel.x) * 1973u ^
         uint(pixel.y) * 9277u ^
         (pc.settings.x + 1u) * 26699u ^
-        (uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * 65535.0) << 1u);
+        uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * 65535.0);
 
     vec3 forward = normalize(pc.cameraForward.xyz);
     vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : kWorldUp;
