@@ -90,61 +90,13 @@ endforeach()
 add_custom_target(MeridianShaders ALL DEPENDS ${MERIDIAN_SHADER_OUTPUTS})
 add_dependencies(Meridian MeridianShaders)
 
-set(MERIDIAN_VCPKG_ROOT "")
-if(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}")
-    set(MERIDIAN_VCPKG_ROOT "$ENV{VCPKG_ROOT}")
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg")
-    set(MERIDIAN_VCPKG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg")
-endif()
+find_package(imgui CONFIG REQUIRED)
 
-if(NOT MERIDIAN_VCPKG_ROOT)
-    message(FATAL_ERROR "Unable to locate VCPKG_ROOT for local ImGui source compilation.")
-endif()
-
-set(MERIDIAN_IMGUI_SOURCE_ROOT "")
-file(GLOB MERIDIAN_IMGUI_SOURCE_CANDIDATES LIST_DIRECTORIES true
-    "${MERIDIAN_VCPKG_ROOT}/buildtrees/imgui/src/*")
-foreach(MERIDIAN_IMGUI_SOURCE_CANDIDATE IN LISTS MERIDIAN_IMGUI_SOURCE_CANDIDATES)
-    if(EXISTS "${MERIDIAN_IMGUI_SOURCE_CANDIDATE}/imgui.cpp"
-        AND EXISTS "${MERIDIAN_IMGUI_SOURCE_CANDIDATE}/backends/imgui_impl_sdl3.cpp"
-        AND EXISTS "${MERIDIAN_IMGUI_SOURCE_CANDIDATE}/backends/imgui_impl_vulkan.cpp")
-        set(MERIDIAN_IMGUI_SOURCE_ROOT "${MERIDIAN_IMGUI_SOURCE_CANDIDATE}")
-        break()
-    endif()
-endforeach()
-unset(MERIDIAN_IMGUI_SOURCE_CANDIDATE)
-unset(MERIDIAN_IMGUI_SOURCE_CANDIDATES)
-
-if(NOT MERIDIAN_IMGUI_SOURCE_ROOT)
-    message(FATAL_ERROR
-        "Unable to locate Dear ImGui sources under ${MERIDIAN_VCPKG_ROOT}/buildtrees/imgui/src. "
-        "Build or install the imgui port first so the source tree is available.")
-endif()
-
-add_library(MeridianImGui STATIC
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/imgui.cpp"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/imgui_demo.cpp"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/imgui_draw.cpp"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/imgui_tables.cpp"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/imgui_widgets.cpp"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/backends/imgui_impl_sdl3.cpp"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/backends/imgui_impl_vulkan.cpp"
-)
-
-target_include_directories(MeridianImGui PUBLIC
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}"
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/backends"
-)
-
-target_link_libraries(MeridianImGui PUBLIC
-    SDL3::SDL3
-    volk::volk
-)
-
-set_source_files_properties(
-    "${MERIDIAN_IMGUI_SOURCE_ROOT}/backends/imgui_impl_vulkan.cpp"
-    PROPERTIES COMPILE_DEFINITIONS
-        "IMGUI_IMPL_VULKAN_NO_PROTOTYPES=1;VK_NO_PROTOTYPES=1")
+add_library(MeridianImGui INTERFACE)
+target_link_libraries(MeridianImGui INTERFACE imgui::imgui)
+target_compile_definitions(MeridianImGui INTERFACE
+    IMGUI_IMPL_VULKAN_NO_PROTOTYPES=1
+    VK_NO_PROTOTYPES=1)
 
 target_sources(Meridian PRIVATE
     src/main.cpp
