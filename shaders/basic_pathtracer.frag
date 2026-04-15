@@ -49,6 +49,15 @@ const float kTerrainTerraceScale = 0.5;
 const float kTerrainTerraceHeight = 2.0;
 const float kRayMarchStepMultiplier = 0.7;
 const float kTerrainDistanceClamp = -4.0;
+const float kTerrainBroadFrequency = 0.015;
+const float kTerrainDetailFrequency = 0.055;
+const float kTerrainBroadAmplitude = 42.0;
+const float kTerrainRidgeFrequency = 0.45;
+const float kTerrainRidgeAmplitude = 9.0;
+const float kTerrainDetailAmplitude = 10.0;
+const float kTreeGridSize = 6.0;
+const float kTreeChanceThreshold = 0.80;
+const float kRngHashScale = 4294967295.0;
 const float kRayMarchMinStep = 0.04;
 const float kRayMarchMaxStep = 1.25;
 const int kBinaryRefinementSteps = 6;
@@ -272,11 +281,12 @@ vec3 materialAlbedo(uint materialId, vec3 position)
 
 float terrainHeight(vec2 xz)
 {
-    vec2 broadCoord = xz * 0.015;
-    vec2 detailCoord = xz * 0.055;
-    float broad = fbm(broadCoord) * 42.0;
-    float ridge = (1.0 - abs(fbm(detailCoord * 0.45 + vec2(9.0, -4.0)) * 2.0 - 1.0)) * 9.0;
-    float detail = fbm(detailCoord + vec2(4.0, 11.0)) * 10.0;
+    vec2 broadCoord = xz * kTerrainBroadFrequency;
+    vec2 detailCoord = xz * kTerrainDetailFrequency;
+    float broad = fbm(broadCoord) * kTerrainBroadAmplitude;
+    float ridge = (1.0 - abs(fbm(detailCoord * kTerrainRidgeFrequency + vec2(9.0, -4.0)) * 2.0 - 1.0)) *
+        kTerrainRidgeAmplitude;
+    float detail = fbm(detailCoord + vec2(4.0, 11.0)) * kTerrainDetailAmplitude;
     float terraces = floor((broad + ridge + detail - kTerrainHeightOffset) *
         kTerrainTerraceScale) * kTerrainTerraceHeight;
     return terraces;
@@ -313,10 +323,10 @@ VoxelSample sampleVoxel(ivec3 cell)
         }
     }
 
-    vec2 groveCell = floor(vec2(cell.x, cell.z) / 6.0);
+    vec2 groveCell = floor(vec2(cell.x, cell.z) / kTreeGridSize);
     float treeChance = hash21(groveCell + vec2(0.73, 4.12));
-    if (treeChance > 0.80) {
-        vec2 treeOrigin = floor(groveCell * 6.0 + vec2(
+    if (treeChance > kTreeChanceThreshold) {
+        vec2 treeOrigin = floor(groveCell * kTreeGridSize + vec2(
             floor(hash21(groveCell + vec2(2.1, 7.4)) * 4.0) + 1.0,
             floor(hash21(groveCell + vec2(8.3, 1.7)) * 4.0) + 1.0));
         int treeBase = int(floor(terrainHeight(treeOrigin)));
@@ -623,7 +633,7 @@ void main()
         uint(pixel.x) * 1973u ^
         uint(pixel.y) * 9277u ^
         (pc.settings.x + 1u) * 26699u ^
-        uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * 65535.0);
+        uint(hash11(float(pc.settings.x) + dot(inUv, vec2(13.0, 17.0))) * kRngHashScale);
 
     vec3 forward = normalize(pc.cameraForward.xyz);
     vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : kWorldUp;
