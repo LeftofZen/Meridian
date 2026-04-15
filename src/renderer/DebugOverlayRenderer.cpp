@@ -219,27 +219,44 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
                 ? "Filtering active"
                 : "Showing raw path traced output");
 
-        float denoiserKernelStep = m_pathTracerSettings->denoiserKernelStep;
-        if (ImGui::SliderFloat("Denoise Kernel Step", &denoiserKernelStep, 0.5F, 8.0F, "%.2f")) {
-            m_pathTracerSettings->denoiserKernelStep = denoiserKernelStep;
+        int denoiserAtrousIterations = m_pathTracerSettings->denoiserAtrousIterations;
+        if (ImGui::SliderInt("SVGF Iterations", &denoiserAtrousIterations, 0, 6)) {
+            m_pathTracerSettings->denoiserAtrousIterations = denoiserAtrousIterations;
+            m_pathTracerSettings->clamp();
+        }
+
+        float denoiserTemporalResponse = m_pathTracerSettings->denoiserTemporalResponse;
+        if (ImGui::SliderFloat(
+                "SVGF Temporal Response",
+                &denoiserTemporalResponse,
+                0.01F,
+                1.0F,
+                "%.2f")) {
+            m_pathTracerSettings->denoiserTemporalResponse = denoiserTemporalResponse;
             m_pathTracerSettings->clamp();
         }
 
         float denoiserColorPhi = m_pathTracerSettings->denoiserColorPhi;
-        if (ImGui::SliderFloat("Denoise Color Phi", &denoiserColorPhi, 0.01F, 8.0F, "%.2f")) {
+        if (ImGui::SliderFloat("SVGF Color Phi", &denoiserColorPhi, 0.1F, 24.0F, "%.2f")) {
             m_pathTracerSettings->denoiserColorPhi = denoiserColorPhi;
             m_pathTracerSettings->clamp();
         }
 
         float denoiserNormalPhi = m_pathTracerSettings->denoiserNormalPhi;
-        if (ImGui::SliderFloat("Denoise Normal Phi", &denoiserNormalPhi, 0.01F, 8.0F, "%.2f")) {
+        if (ImGui::SliderFloat("SVGF Normal Phi", &denoiserNormalPhi, 1.0F, 64.0F, "%.1f")) {
             m_pathTracerSettings->denoiserNormalPhi = denoiserNormalPhi;
+            m_pathTracerSettings->clamp();
+        }
+
+        float denoiserDepthPhi = m_pathTracerSettings->denoiserDepthPhi;
+        if (ImGui::SliderFloat("SVGF Depth Phi", &denoiserDepthPhi, 0.05F, 8.0F, "%.2f")) {
+            m_pathTracerSettings->denoiserDepthPhi = denoiserDepthPhi;
             m_pathTracerSettings->clamp();
         }
 
         float denoiserDifferenceGain = m_pathTracerSettings->denoiserDifferenceGain;
         if (ImGui::SliderFloat(
-                "Denoise Difference Gain",
+                "SVGF Difference Gain",
                 &denoiserDifferenceGain,
                 1.0F,
                 32.0F,

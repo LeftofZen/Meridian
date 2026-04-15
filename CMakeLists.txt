@@ -60,6 +60,8 @@ set(MERIDIAN_SHADER_SOURCES
     shaders/fullscreen_triangle.vert
     shaders/basic_pathtracer.frag
     shaders/pathtracer_denoise.frag
+    shaders/pathtracer_svgf_temporal.frag
+    shaders/pathtracer_svgf_atrous.frag
     shaders/terrain_heightmap.comp
 )
 

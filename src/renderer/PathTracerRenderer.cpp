@@ -19,6 +19,8 @@ namespace {
 constexpr VkViewport kDefaultViewport{};
 constexpr VkFormat kTraceColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kTraceGuideFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kHistoryColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr std::uint32_t kMaxHistoryFrames = 32U;
 
 [[nodiscard]] std::int32_t worldToChunkCoord(float worldPosition, std::uint32_t chunkResolution) noexcept
 {
@@ -42,6 +44,18 @@ constexpr VkFormat kTraceGuideFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     return {value[0], value[1], value[2], w};
 }
 
+[[nodiscard]] std::array<float, 4> packFrameData(
+    const CameraRenderState& camera,
+    VkExtent2D extent) noexcept
+{
+    return {
+        static_cast<float>(extent.width),
+        static_cast<float>(extent.height),
+        camera.projection.verticalFovDegrees,
+        camera.projection.aspectRatio,
+    };
+}
+
 } // namespace
 
 bool PathTracerRenderer::init(VulkanContext& context)
@@ -63,6 +77,12 @@ bool PathTracerRenderer::init(VulkanContext& context)
         return false;
     }
 
+    if (!createPostProcessRenderPass()) {
+        destroyPipeline();
+        destroyDescriptorResources();
+        return false;
+    }
+
     if (!createTraceTargets()) {
         destroyPipeline();
         destroyDescriptorResources();
@@ -70,6 +90,18 @@ bool PathTracerRenderer::init(VulkanContext& context)
     }
 
     if (!createPipeline()) {
+        destroyPipeline();
+        destroyDescriptorResources();
+        return false;
+    }
+
+    if (!createTemporalPipeline()) {
+        destroyPipeline();
+        destroyDescriptorResources();
+        return false;
+    }
+
+    if (!createFilterPipeline()) {
         destroyPipeline();
         destroyDescriptorResources();
         return false;
@@ -111,6 +143,10 @@ void PathTracerRenderer::beginFrame()
     }
 
     FrameResources& frameResources = m_frameResources[m_currentFrameSlot];
+    const std::size_t previousFrameSlot = m_frameResources.size() > 1
+        ? (m_currentFrameSlot + m_frameResources.size() - 1) % m_frameResources.size()
+        : m_currentFrameSlot;
+    const FrameResources& previousFrameResources = m_frameResources[previousFrameSlot];
 
     if (m_renderStateStore != nullptr) {
         m_renderStateSnapshot = m_renderStateStore->snapshot();
@@ -129,6 +165,124 @@ void PathTracerRenderer::beginFrame()
             }
         }
     }
+
+    const bool historyValid =
+        previousFrameSlot != m_currentFrameSlot &&
+        previousFrameResources.historyValid &&
+        previousFrameResources.worldRevision == m_renderStateSnapshot.world.revision &&
+        previousFrameResources.lightingRevision == m_renderStateSnapshot.lighting.revision &&
+        previousFrameResources.renderSettingsRevision == m_renderStateSnapshot.worldRenderSettings.revision;
+    const GpuImage& historySourceImage = previousFrameSlot != m_currentFrameSlot
+        ? previousFrameResources.historyColor
+        : frameResources.filterPing;
+    const GpuImage& historySourceGuide = previousFrameSlot != m_currentFrameSlot
+        ? previousFrameResources.traceGuide
+        : frameResources.traceGuide;
+
+    const VkDescriptorImageInfo temporalRawImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = frameResources.traceColor.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo temporalGuideImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = frameResources.traceGuide.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo temporalHistoryImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = historySourceImage.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo temporalHistoryGuideInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = historySourceGuide.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    const VkWriteDescriptorSet temporalWrites[] = {
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.temporalDescriptorSet,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &temporalRawImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.temporalDescriptorSet,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &temporalGuideImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.temporalDescriptorSet,
+            .dstBinding = 2,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &temporalHistoryImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.temporalDescriptorSet,
+            .dstBinding = 3,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &temporalHistoryGuideInfo,
+        },
+    };
+
+    const GpuImage& finalImage = m_settings.denoiserAtrousIterations <= 0
+        ? frameResources.historyColor
+        : ((m_settings.denoiserAtrousIterations % 2) == 0 ? frameResources.filterPong
+                                                           : frameResources.filterPing);
+    const VkDescriptorImageInfo presentRawImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = frameResources.traceColor.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo presentFilteredImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = finalImage.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    const VkWriteDescriptorSet presentWrites[] = {
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.denoiseDescriptorSet,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &presentRawImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.denoiseDescriptorSet,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &presentFilteredImageInfo,
+        },
+    };
+
+    vkUpdateDescriptorSets(
+        m_context->getDevice(),
+        static_cast<std::uint32_t>(std::size(temporalWrites)),
+        temporalWrites,
+        0,
+        nullptr);
+    vkUpdateDescriptorSets(
+        m_context->getDevice(),
+        static_cast<std::uint32_t>(std::size(presentWrites)),
+        presentWrites,
+        0,
+        nullptr);
+
+    frameResources.historyValid = historyValid;
 }
 
 void PathTracerRenderer::recordPreRender(VkCommandBuffer commandBuffer)
@@ -136,14 +290,25 @@ void PathTracerRenderer::recordPreRender(VkCommandBuffer commandBuffer)
     if (m_context == nullptr ||
         m_traceRenderPass == VK_NULL_HANDLE ||
         m_pipeline == VK_NULL_HANDLE ||
+        m_postProcessRenderPass == VK_NULL_HANDLE ||
+        m_temporalPipeline == VK_NULL_HANDLE ||
+        m_temporalPipelineLayout == VK_NULL_HANDLE ||
+        m_filterPipeline == VK_NULL_HANDLE ||
+        m_filterPipelineLayout == VK_NULL_HANDLE ||
         m_pipelineLayout == VK_NULL_HANDLE ||
         m_frameResources.empty()) {
         return;
     }
 
-    const FrameResources& frameResources = m_frameResources[m_currentFrameSlot];
+    FrameResources& frameResources = m_frameResources[m_currentFrameSlot];
+    const std::size_t previousFrameSlot = m_frameResources.size() > 1
+        ? (m_currentFrameSlot + m_frameResources.size() - 1) % m_frameResources.size()
+        : m_currentFrameSlot;
+    const FrameResources& previousFrameResources = m_frameResources[previousFrameSlot];
     if (frameResources.descriptorSet == VK_NULL_HANDLE ||
-        frameResources.traceFramebuffer == VK_NULL_HANDLE) {
+        frameResources.temporalDescriptorSet == VK_NULL_HANDLE ||
+        frameResources.traceFramebuffer == VK_NULL_HANDLE ||
+        frameResources.historyFramebuffer == VK_NULL_HANDLE) {
         return;
     }
 
@@ -256,6 +421,116 @@ void PathTracerRenderer::recordPreRender(VkCommandBuffer commandBuffer)
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     vkCmdEndRenderPass(commandBuffer);
     m_context->applyFragmentShadingRate(commandBuffer, 1U);
+
+    const auto recordFullscreenPass = [&](VkFramebuffer framebuffer,
+                                          VkPipeline pipeline,
+                                          VkPipelineLayout pipelineLayout,
+                                          VkDescriptorSet descriptorSet,
+                                          const void* pushConstants,
+                                          std::uint32_t pushConstantSize,
+                                          const std::array<float, 4>& clearColor) {
+        const VkClearValue clearValue{.color = {{
+            clearColor[0],
+            clearColor[1],
+            clearColor[2],
+            clearColor[3],
+        }}};
+
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = m_postProcessRenderPass;
+        renderPassInfo.framebuffer = framebuffer;
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = extent;
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearValue;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout,
+            0,
+            1,
+            &descriptorSet,
+            0,
+            nullptr);
+        if (pushConstants != nullptr && pushConstantSize > 0U) {
+            vkCmdPushConstants(
+                commandBuffer,
+                pipelineLayout,
+                VK_SHADER_STAGE_FRAGMENT_BIT,
+                0,
+                pushConstantSize,
+                pushConstants);
+        }
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdEndRenderPass(commandBuffer);
+    };
+
+    const TemporalPushConstants temporalPushConstants{
+        .toggles = {
+            frameResources.historyValid ? 1U : 0U,
+            0U,
+            0U,
+            0U,
+        },
+        .temporalParameters0 = {
+            m_settings.denoiserTemporalResponse,
+            static_cast<float>(kMaxHistoryFrames),
+            m_settings.denoiserDepthPhi,
+            0.0F,
+        },
+        .currentFrameData = packFrameData(m_renderStateSnapshot.camera, extent),
+        .currentCameraPosition = packVec4(m_renderStateSnapshot.camera.position, 0.0F),
+        .currentCameraForward = packVec4(m_renderStateSnapshot.camera.forward, 0.0F),
+        .previousFrameData = packFrameData(previousFrameResources.cameraState, extent),
+        .previousCameraPosition = packVec4(previousFrameResources.cameraState.position, 0.0F),
+        .previousCameraForward = packVec4(previousFrameResources.cameraState.forward, 0.0F),
+    };
+
+    recordFullscreenPass(
+        frameResources.historyFramebuffer,
+        m_temporalPipeline,
+        m_temporalPipelineLayout,
+        frameResources.temporalDescriptorSet,
+        &temporalPushConstants,
+        sizeof(TemporalPushConstants),
+        {0.0F, 0.0F, 0.0F, 1.0F});
+
+    const int atrousIterations = std::max(0, m_settings.denoiserAtrousIterations);
+    for (int iteration = 0; iteration < atrousIterations; ++iteration) {
+        const VkDescriptorSet descriptorSet = iteration == 0
+            ? frameResources.filterDescriptorSets[0]
+            : ((iteration % 2) == 1 ? frameResources.filterDescriptorSets[1]
+                                    : frameResources.filterDescriptorSets[2]);
+        const VkFramebuffer framebuffer = (iteration % 2) == 0
+            ? frameResources.filterPingFramebuffer
+            : frameResources.filterPongFramebuffer;
+        const FilterPushConstants filterPushConstants{
+            .filterParameters0 = {
+                static_cast<float>(1 << iteration),
+                m_settings.denoiserColorPhi,
+                m_settings.denoiserNormalPhi,
+                m_settings.denoiserDepthPhi,
+            },
+        };
+
+        recordFullscreenPass(
+            framebuffer,
+            m_filterPipeline,
+            m_filterPipelineLayout,
+            descriptorSet,
+            &filterPushConstants,
+            sizeof(FilterPushConstants),
+            {0.0F, 0.0F, 0.0F, 1.0F});
+    }
+
+    frameResources.cameraState = m_renderStateSnapshot.camera;
+    frameResources.historyValid = true;
 }
 
 void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
@@ -299,10 +574,10 @@ void PathTracerRenderer::recordFrame(VkCommandBuffer commandBuffer)
             0U,
         },
         .filterParameters0 = {
-            m_settings.denoiserKernelStep,
-            m_settings.denoiserColorPhi,
-            m_settings.denoiserNormalPhi,
             m_settings.denoiserDifferenceGain,
+            0.0F,
+            0.0F,
+            0.0F,
         },
     };
 
@@ -434,6 +709,76 @@ bool PathTracerRenderer::createDescriptorResources()
             std::format("Path Tracer Descriptor Set {}", index));
     }
 
+    const VkDescriptorSetLayoutBinding temporalBindings[] = {
+        VkDescriptorSetLayoutBinding{
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        VkDescriptorSetLayoutBinding{
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        VkDescriptorSetLayoutBinding{
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        VkDescriptorSetLayoutBinding{
+            .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+    };
+
+    VkDescriptorSetLayoutCreateInfo temporalLayoutInfo{};
+    temporalLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    temporalLayoutInfo.bindingCount = static_cast<std::uint32_t>(std::size(temporalBindings));
+    temporalLayoutInfo.pBindings = temporalBindings;
+
+    if (vkCreateDescriptorSetLayout(
+            m_context->getDevice(),
+            &temporalLayoutInfo,
+            nullptr,
+            &m_temporalDescriptorSetLayout) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer temporal descriptor set layout");
+        return false;
+    }
+
+    const VkDescriptorSetLayoutBinding filterBindings[] = {
+        VkDescriptorSetLayoutBinding{
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        VkDescriptorSetLayoutBinding{
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+    };
+
+    VkDescriptorSetLayoutCreateInfo filterLayoutInfo{};
+    filterLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    filterLayoutInfo.bindingCount = static_cast<std::uint32_t>(std::size(filterBindings));
+    filterLayoutInfo.pBindings = filterBindings;
+
+    if (vkCreateDescriptorSetLayout(
+            m_context->getDevice(),
+            &filterLayoutInfo,
+            nullptr,
+            &m_filterDescriptorSetLayout) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer filter descriptor set layout");
+        return false;
+    }
+
     const VkDescriptorSetLayoutBinding denoiseBindings[] = {
         VkDescriptorSetLayoutBinding{
             .binding = 0,
@@ -467,6 +812,46 @@ bool PathTracerRenderer::createDescriptorResources()
         reinterpret_cast<std::uint64_t>(m_denoiseDescriptorSetLayout),
         VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
         "Path Tracer Denoise Descriptor Set Layout");
+
+    const VkDescriptorPoolSize temporalPoolSize{
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = static_cast<std::uint32_t>(frameCount * 4U),
+    };
+
+    VkDescriptorPoolCreateInfo temporalPoolInfo{};
+    temporalPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    temporalPoolInfo.maxSets = static_cast<std::uint32_t>(frameCount);
+    temporalPoolInfo.poolSizeCount = 1;
+    temporalPoolInfo.pPoolSizes = &temporalPoolSize;
+
+    if (vkCreateDescriptorPool(
+            m_context->getDevice(),
+            &temporalPoolInfo,
+            nullptr,
+            &m_temporalDescriptorPool) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer temporal descriptor pool");
+        return false;
+    }
+
+    const VkDescriptorPoolSize filterPoolSize{
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = static_cast<std::uint32_t>(frameCount * 6U),
+    };
+
+    VkDescriptorPoolCreateInfo filterPoolInfo{};
+    filterPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    filterPoolInfo.maxSets = static_cast<std::uint32_t>(frameCount * 3U);
+    filterPoolInfo.poolSizeCount = 1;
+    filterPoolInfo.pPoolSizes = &filterPoolSize;
+
+    if (vkCreateDescriptorPool(
+            m_context->getDevice(),
+            &filterPoolInfo,
+            nullptr,
+            &m_filterDescriptorPool) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer filter descriptor pool");
+        return false;
+    }
 
     const VkDescriptorPoolSize denoisePoolSize{
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -516,6 +901,49 @@ bool PathTracerRenderer::createDescriptorResources()
         reinterpret_cast<std::uint64_t>(m_denoiseSampler),
         VK_OBJECT_TYPE_SAMPLER,
         "Path Tracer Denoise Sampler");
+
+    VkDescriptorSetAllocateInfo temporalAllocInfo{};
+    temporalAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    temporalAllocInfo.descriptorPool = m_temporalDescriptorPool;
+    std::vector<VkDescriptorSetLayout> temporalLayouts(frameCount, m_temporalDescriptorSetLayout);
+    std::vector<VkDescriptorSet> temporalDescriptorSets(frameCount, VK_NULL_HANDLE);
+    temporalAllocInfo.descriptorSetCount = static_cast<std::uint32_t>(frameCount);
+    temporalAllocInfo.pSetLayouts = temporalLayouts.data();
+
+    if (vkAllocateDescriptorSets(
+            m_context->getDevice(),
+            &temporalAllocInfo,
+            temporalDescriptorSets.data()) != VK_SUCCESS) {
+        MRD_ERROR("Failed to allocate path tracer temporal descriptor set");
+        return false;
+    }
+
+    for (std::size_t index = 0; index < frameCount; ++index) {
+        m_frameResources[index].temporalDescriptorSet = temporalDescriptorSets[index];
+    }
+
+    VkDescriptorSetAllocateInfo filterAllocInfo{};
+    filterAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    filterAllocInfo.descriptorPool = m_filterDescriptorPool;
+    std::vector<VkDescriptorSetLayout> filterLayouts(frameCount * 3U, m_filterDescriptorSetLayout);
+    std::vector<VkDescriptorSet> filterDescriptorSets(frameCount * 3U, VK_NULL_HANDLE);
+    filterAllocInfo.descriptorSetCount = static_cast<std::uint32_t>(filterLayouts.size());
+    filterAllocInfo.pSetLayouts = filterLayouts.data();
+
+    if (vkAllocateDescriptorSets(
+            m_context->getDevice(),
+            &filterAllocInfo,
+            filterDescriptorSets.data()) != VK_SUCCESS) {
+        MRD_ERROR("Failed to allocate path tracer filter descriptor sets");
+        return false;
+    }
+
+    for (std::size_t index = 0; index < frameCount; ++index) {
+        for (std::size_t setIndex = 0; setIndex < 3; ++setIndex) {
+            m_frameResources[index].filterDescriptorSets[setIndex] =
+                filterDescriptorSets[index * 3U + setIndex];
+        }
+    }
 
     VkDescriptorSetAllocateInfo denoiseAllocInfo{};
     denoiseAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -628,6 +1056,76 @@ bool PathTracerRenderer::createTraceRenderPass()
         reinterpret_cast<std::uint64_t>(m_traceRenderPass),
         VK_OBJECT_TYPE_RENDER_PASS,
         "Path Tracer Offscreen Render Pass");
+
+    return true;
+}
+
+bool PathTracerRenderer::createPostProcessRenderPass()
+{
+    if (m_context == nullptr) {
+        return false;
+    }
+
+    const VkAttachmentDescription attachment{
+        .format = kHistoryColorFormat,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    const VkAttachmentReference colorAttachmentRef{
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
+
+    VkSubpassDependency dependencyFromExternal{};
+    dependencyFromExternal.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencyFromExternal.dstSubpass = 0;
+    dependencyFromExternal.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dependencyFromExternal.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencyFromExternal.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkSubpassDependency dependencyToExternal{};
+    dependencyToExternal.srcSubpass = 0;
+    dependencyToExternal.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencyToExternal.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencyToExternal.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencyToExternal.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencyToExternal.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    const std::array<VkSubpassDependency, 2> dependencies{
+        dependencyFromExternal,
+        dependencyToExternal,
+    };
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &attachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = static_cast<std::uint32_t>(dependencies.size());
+    renderPassInfo.pDependencies = dependencies.data();
+
+    if (vkCreateRenderPass(m_context->getDevice(), &renderPassInfo, nullptr, &m_postProcessRenderPass) !=
+        VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer post-process render pass");
+        return false;
+    }
+
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(m_postProcessRenderPass),
+        VK_OBJECT_TYPE_RENDER_PASS,
+        "Path Tracer Post Process Render Pass");
 
     return true;
 }
@@ -792,6 +1290,250 @@ bool PathTracerRenderer::createPipeline()
         reinterpret_cast<std::uint64_t>(m_pipeline),
         VK_OBJECT_TYPE_PIPELINE,
         "Path Tracer Pipeline");
+
+    return true;
+}
+
+bool PathTracerRenderer::createTemporalPipeline()
+{
+    if (m_context == nullptr) {
+        return false;
+    }
+
+    ShaderLibrary& shaderLibrary = m_context->getShaderLibrary();
+    const VkShaderModule vertexShader = shaderLibrary.loadBuiltInModule("fullscreen_triangle.vert");
+    const VkShaderModule fragmentShader = shaderLibrary.loadBuiltInModule("pathtracer_svgf_temporal.frag");
+    if (vertexShader == VK_NULL_HANDLE || fragmentShader == VK_NULL_HANDLE) {
+        MRD_ERROR("Path tracer SVGF temporal shader load failed");
+        return false;
+    }
+
+    const VkPipelineShaderStageCreateInfo shaderStages[] = {
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vertexShader,
+            .pName = "main",
+        },
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = fragmentShader,
+            .pName = "main",
+        },
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.lineWidth = 1.0F;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT |
+        VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const std::array<VkDynamicState, 2> dynamicStates{
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.size = sizeof(TemporalPushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_temporalDescriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(
+            m_context->getDevice(),
+            &pipelineLayoutInfo,
+            nullptr,
+            &m_temporalPipelineLayout) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer temporal pipeline layout");
+        return false;
+    }
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = m_temporalPipelineLayout;
+    pipelineInfo.renderPass = m_postProcessRenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(
+            m_context->getDevice(),
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &m_temporalPipeline) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer temporal graphics pipeline");
+        return false;
+    }
+
+    return true;
+}
+
+bool PathTracerRenderer::createFilterPipeline()
+{
+    if (m_context == nullptr) {
+        return false;
+    }
+
+    ShaderLibrary& shaderLibrary = m_context->getShaderLibrary();
+    const VkShaderModule vertexShader = shaderLibrary.loadBuiltInModule("fullscreen_triangle.vert");
+    const VkShaderModule fragmentShader = shaderLibrary.loadBuiltInModule("pathtracer_svgf_atrous.frag");
+    if (vertexShader == VK_NULL_HANDLE || fragmentShader == VK_NULL_HANDLE) {
+        MRD_ERROR("Path tracer SVGF A-Trous shader load failed");
+        return false;
+    }
+
+    const VkPipelineShaderStageCreateInfo shaderStages[] = {
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vertexShader,
+            .pName = "main",
+        },
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = fragmentShader,
+            .pName = "main",
+        },
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.lineWidth = 1.0F;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT |
+        VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const std::array<VkDynamicState, 2> dynamicStates{
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.size = sizeof(FilterPushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_filterDescriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(
+            m_context->getDevice(),
+            &pipelineLayoutInfo,
+            nullptr,
+            &m_filterPipelineLayout) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer filter pipeline layout");
+        return false;
+    }
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = m_filterPipelineLayout;
+    pipelineInfo.renderPass = m_postProcessRenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(
+            m_context->getDevice(),
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &m_filterPipeline) != VK_SUCCESS) {
+        MRD_ERROR("Failed to create path tracer filter graphics pipeline");
+        return false;
+    }
 
     return true;
 }
@@ -1362,7 +2104,9 @@ bool PathTracerRenderer::createImage(
 
 bool PathTracerRenderer::createTraceTarget(FrameResources& frameResources)
 {
-    if (m_context == nullptr || m_traceRenderPass == VK_NULL_HANDLE) {
+    if (m_context == nullptr ||
+        m_traceRenderPass == VK_NULL_HANDLE ||
+        m_postProcessRenderPass == VK_NULL_HANDLE) {
         return false;
     }
 
@@ -1379,6 +2123,24 @@ bool PathTracerRenderer::createTraceTarget(FrameResources& frameResources)
             kTraceGuideFormat,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             frameResources.traceGuide)) {
+        return false;
+    }
+
+    if (!createImage(
+            m_context->getSwapchainExtent(),
+            kHistoryColorFormat,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            frameResources.historyColor) ||
+        !createImage(
+            m_context->getSwapchainExtent(),
+            kHistoryColorFormat,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            frameResources.filterPing) ||
+        !createImage(
+            m_context->getSwapchainExtent(),
+            kHistoryColorFormat,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            frameResources.filterPong)) {
         return false;
     }
 
@@ -1408,6 +2170,19 @@ bool PathTracerRenderer::createTraceTarget(FrameResources& frameResources)
         VK_OBJECT_TYPE_IMAGE_VIEW,
         "Path Tracer Guide Image View");
 
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(frameResources.historyColor.image),
+        VK_OBJECT_TYPE_IMAGE,
+        "Path Tracer History Image");
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(frameResources.filterPing.image),
+        VK_OBJECT_TYPE_IMAGE,
+        "Path Tracer Filter Ping Image");
+    m_context->setObjectDebugName(
+        reinterpret_cast<std::uint64_t>(frameResources.filterPong.image),
+        VK_OBJECT_TYPE_IMAGE,
+        "Path Tracer Filter Pong Image");
+
     const std::array<VkImageView, 2> attachments{
         frameResources.traceColor.view,
         frameResources.traceGuide.view,
@@ -1435,40 +2210,104 @@ bool PathTracerRenderer::createTraceTarget(FrameResources& frameResources)
         VK_OBJECT_TYPE_FRAMEBUFFER,
         "Path Tracer Offscreen Framebuffer");
 
-    const VkDescriptorImageInfo denoiseImageInfo{
-        .sampler = m_denoiseSampler,
-        .imageView = frameResources.traceColor.view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    const auto createSingleColorFramebuffer = [&](VkImageView imageView, VkFramebuffer& framebuffer) {
+        VkFramebufferCreateInfo singleFramebufferInfo{};
+        singleFramebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        singleFramebufferInfo.renderPass = m_postProcessRenderPass;
+        singleFramebufferInfo.attachmentCount = 1;
+        singleFramebufferInfo.pAttachments = &imageView;
+        singleFramebufferInfo.width = m_context->getSwapchainExtent().width;
+        singleFramebufferInfo.height = m_context->getSwapchainExtent().height;
+        singleFramebufferInfo.layers = 1;
+        return vkCreateFramebuffer(
+                   m_context->getDevice(),
+                   &singleFramebufferInfo,
+                   nullptr,
+                   &framebuffer) == VK_SUCCESS;
     };
 
-    const VkDescriptorImageInfo denoiseGuideImageInfo{
+    if (!createSingleColorFramebuffer(frameResources.historyColor.view, frameResources.historyFramebuffer) ||
+        !createSingleColorFramebuffer(frameResources.filterPing.view, frameResources.filterPingFramebuffer) ||
+        !createSingleColorFramebuffer(frameResources.filterPong.view, frameResources.filterPongFramebuffer)) {
+        MRD_ERROR("Failed to create path tracer post-process framebuffer");
+        return false;
+    }
+
+    const VkDescriptorImageInfo historyFilterImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = frameResources.historyColor.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo pingFilterImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = frameResources.filterPing.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo pongFilterImageInfo{
+        .sampler = m_denoiseSampler,
+        .imageView = frameResources.filterPong.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo filterGuideImageInfo{
         .sampler = m_denoiseSampler,
         .imageView = frameResources.traceGuide.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
-    const VkWriteDescriptorSet denoiseWrites[] = {
+    const VkWriteDescriptorSet filterWrites[] = {
         VkWriteDescriptorSet{
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = frameResources.denoiseDescriptorSet,
+            .dstSet = frameResources.filterDescriptorSets[0],
             .dstBinding = 0,
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &denoiseImageInfo,
+            .pImageInfo = &historyFilterImageInfo,
         },
         VkWriteDescriptorSet{
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = frameResources.denoiseDescriptorSet,
+            .dstSet = frameResources.filterDescriptorSets[0],
             .dstBinding = 1,
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &denoiseGuideImageInfo,
+            .pImageInfo = &filterGuideImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.filterDescriptorSets[1],
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &pingFilterImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.filterDescriptorSets[1],
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &filterGuideImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.filterDescriptorSets[2],
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &pongFilterImageInfo,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = frameResources.filterDescriptorSets[2],
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &filterGuideImageInfo,
         },
     };
     vkUpdateDescriptorSets(
         m_context->getDevice(),
-        static_cast<std::uint32_t>(std::size(denoiseWrites)),
-        denoiseWrites,
+        static_cast<std::uint32_t>(std::size(filterWrites)),
+        filterWrites,
         0,
         nullptr);
 
@@ -1487,6 +2326,26 @@ void PathTracerRenderer::destroyPipeline() noexcept
         m_pipelineLayout = VK_NULL_HANDLE;
     }
 
+    if (m_context != nullptr && m_temporalPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_context->getDevice(), m_temporalPipeline, nullptr);
+        m_temporalPipeline = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_temporalPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(m_context->getDevice(), m_temporalPipelineLayout, nullptr);
+        m_temporalPipelineLayout = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_filterPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_context->getDevice(), m_filterPipeline, nullptr);
+        m_filterPipeline = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_filterPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(m_context->getDevice(), m_filterPipelineLayout, nullptr);
+        m_filterPipelineLayout = VK_NULL_HANDLE;
+    }
+
     if (m_context != nullptr && m_denoisePipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(m_context->getDevice(), m_denoisePipeline, nullptr);
         m_denoisePipeline = VK_NULL_HANDLE;
@@ -1501,6 +2360,11 @@ void PathTracerRenderer::destroyPipeline() noexcept
         vkDestroyRenderPass(m_context->getDevice(), m_traceRenderPass, nullptr);
         m_traceRenderPass = VK_NULL_HANDLE;
     }
+
+    if (m_context != nullptr && m_postProcessRenderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(m_context->getDevice(), m_postProcessRenderPass, nullptr);
+        m_postProcessRenderPass = VK_NULL_HANDLE;
+    }
 }
 
 void PathTracerRenderer::destroyDescriptorResources() noexcept
@@ -1514,9 +2378,26 @@ void PathTracerRenderer::destroyDescriptorResources() noexcept
             vkDestroyFramebuffer(m_context->getDevice(), frameResources.traceFramebuffer, nullptr);
         }
         frameResources.traceFramebuffer = VK_NULL_HANDLE;
+        if (m_context != nullptr && frameResources.historyFramebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(m_context->getDevice(), frameResources.historyFramebuffer, nullptr);
+        }
+        frameResources.historyFramebuffer = VK_NULL_HANDLE;
+        if (m_context != nullptr && frameResources.filterPingFramebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(m_context->getDevice(), frameResources.filterPingFramebuffer, nullptr);
+        }
+        frameResources.filterPingFramebuffer = VK_NULL_HANDLE;
+        if (m_context != nullptr && frameResources.filterPongFramebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(m_context->getDevice(), frameResources.filterPongFramebuffer, nullptr);
+        }
+        frameResources.filterPongFramebuffer = VK_NULL_HANDLE;
         destroyImage(frameResources.traceColor);
         destroyImage(frameResources.traceGuide);
+        destroyImage(frameResources.historyColor);
+        destroyImage(frameResources.filterPing);
+        destroyImage(frameResources.filterPong);
         frameResources.descriptorSet = VK_NULL_HANDLE;
+        frameResources.temporalDescriptorSet = VK_NULL_HANDLE;
+        frameResources.filterDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
         frameResources.denoiseDescriptorSet = VK_NULL_HANDLE;
     }
     m_frameResources.clear();
@@ -1529,6 +2410,26 @@ void PathTracerRenderer::destroyDescriptorResources() noexcept
     if (m_context != nullptr && m_descriptorSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(m_context->getDevice(), m_descriptorSetLayout, nullptr);
         m_descriptorSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_temporalDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(m_context->getDevice(), m_temporalDescriptorPool, nullptr);
+        m_temporalDescriptorPool = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_temporalDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(m_context->getDevice(), m_temporalDescriptorSetLayout, nullptr);
+        m_temporalDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_filterDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(m_context->getDevice(), m_filterDescriptorPool, nullptr);
+        m_filterDescriptorPool = VK_NULL_HANDLE;
+    }
+
+    if (m_context != nullptr && m_filterDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(m_context->getDevice(), m_filterDescriptorSetLayout, nullptr);
+        m_filterDescriptorSetLayout = VK_NULL_HANDLE;
     }
 
     if (m_context != nullptr && m_denoiseSampler != VK_NULL_HANDLE) {

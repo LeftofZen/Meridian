@@ -9,10 +9,12 @@
 
 namespace {
 
-constexpr std::array<std::string_view, 4> kBuiltInShaderNames{
+constexpr std::array<std::string_view, 6> kBuiltInShaderNames{
     "fullscreen_triangle.vert",
     "basic_pathtracer.frag",
     "pathtracer_denoise.frag",
+    "pathtracer_svgf_temporal.frag",
+    "pathtracer_svgf_atrous.frag",
     "terrain_heightmap.comp",
 };
 

@@ -661,6 +661,11 @@ vec3 tracePath(Ray ray, inout uint rngState)
     return radiance;
 }
 
+float luminance(vec3 color)
+{
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
 vec4 primarySurfaceGuide(
     vec2 pixel,
     vec3 forward,
@@ -682,7 +687,7 @@ vec4 primarySurfaceGuide(
 
     Hit hit;
     if (sceneIntersect(ray, hit)) {
-        return vec4(hit.normal * 0.5 + 0.5, 1.0);
+        return vec4(hit.normal * 0.5 + 0.5, hit.t);
     }
 
     return vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
@@ -712,6 +717,8 @@ void main()
         tanHalfFov);
 
     vec3 color = vec3(0.0);
+    float luminanceSum = 0.0;
+    float luminanceSquaredSum = 0.0;
     const uint sampleCount = max(pc.settings.y, 1u);
     for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
         const vec2 jitter = vec2(randomFloat(rngState), randomFloat(rngState));
@@ -726,9 +733,18 @@ void main()
             right * (ndc.x * tanHalfFov) +
             up * (ndc.y * tanHalfFov));
 
-        color += tracePath(ray, rngState);
+        const vec3 sampleRadiance = tracePath(ray, rngState);
+        color += sampleRadiance;
+
+        const float sampleLuminance = luminance(sampleRadiance);
+        luminanceSum += sampleLuminance;
+        luminanceSquaredSum += sampleLuminance * sampleLuminance;
     }
 
     color /= float(sampleCount);
-    outColor = vec4(color, 1.0);
+    const float meanLuminance = luminanceSum / float(sampleCount);
+    const float variance = max(
+        luminanceSquaredSum / float(sampleCount) - meanLuminance * meanLuminance,
+        0.0);
+    outColor = vec4(color, variance);
 }

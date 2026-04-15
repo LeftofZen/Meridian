@@ -100,11 +100,32 @@ private:
 
     struct DenoisePushConstants {
         std::array<std::uint32_t, 4> toggles{1U, 0U, 0U, 0U};
-        std::array<float, 4> filterParameters0{3.0F, 1.0F, 0.5F, 8.0F};
+        std::array<float, 4> filterParameters0{8.0F, 0.0F, 0.0F, 0.0F};
+    };
+
+    struct TemporalPushConstants {
+        std::array<std::uint32_t, 4> toggles{0U, 0U, 0U, 0U};
+        std::array<float, 4> temporalParameters0{0.15F, 1.0F, 1.0F, 0.0F};
+        std::array<float, 4> currentFrameData{};
+        std::array<float, 4> currentCameraPosition{};
+        std::array<float, 4> currentCameraForward{};
+        std::array<float, 4> previousFrameData{};
+        std::array<float, 4> previousCameraPosition{};
+        std::array<float, 4> previousCameraForward{};
+    };
+
+    struct FilterPushConstants {
+        std::array<float, 4> filterParameters0{1.0F, 6.0F, 24.0F, 1.0F};
     };
 
     struct FrameResources {
         VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+        VkDescriptorSet temporalDescriptorSet{VK_NULL_HANDLE};
+        std::array<VkDescriptorSet, 3> filterDescriptorSets{
+            VK_NULL_HANDLE,
+            VK_NULL_HANDLE,
+            VK_NULL_HANDLE,
+        };
         VkDescriptorSet denoiseDescriptorSet{VK_NULL_HANDLE};
         GpuBuffer chunkBuffer;
         GpuBuffer octreeBuffer;
@@ -112,7 +133,13 @@ private:
         GpuBuffer lightBuffer;
         GpuImage traceColor;
         GpuImage traceGuide;
+        GpuImage historyColor;
+        GpuImage filterPing;
+        GpuImage filterPong;
         VkFramebuffer traceFramebuffer{VK_NULL_HANDLE};
+        VkFramebuffer historyFramebuffer{VK_NULL_HANDLE};
+        VkFramebuffer filterPingFramebuffer{VK_NULL_HANDLE};
+        VkFramebuffer filterPongFramebuffer{VK_NULL_HANDLE};
         std::size_t uploadedChunkCount{0};
         std::size_t uploadedOctreeNodeCount{0};
         std::uint64_t worldRevision{~0ULL};
@@ -124,13 +151,18 @@ private:
         std::array<std::int32_t, 3> cameraChunkCoord{0, 0, 0};
         std::uint32_t chunkResolution{32};
         std::uint64_t renderSettingsRevision{~0ULL};
+        CameraRenderState cameraState{};
+        bool historyValid{false};
     };
 
     [[nodiscard]] bool createDescriptorResources();
     [[nodiscard]] bool createTraceRenderPass();
+    [[nodiscard]] bool createPostProcessRenderPass();
     [[nodiscard]] bool createTraceTargets();
     [[nodiscard]] bool createTraceTarget(FrameResources& frameResources);
     [[nodiscard]] bool createPipeline();
+    [[nodiscard]] bool createTemporalPipeline();
+    [[nodiscard]] bool createFilterPipeline();
     [[nodiscard]] bool createDenoisePipeline();
     [[nodiscard]] bool uploadSceneData(FrameResources& frameResources);
     [[nodiscard]] bool ensureBufferCapacity(GpuBuffer& buffer, VkDeviceSize sizeInBytes);
@@ -158,8 +190,17 @@ private:
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
     VkRenderPass m_traceRenderPass{VK_NULL_HANDLE};
+    VkRenderPass m_postProcessRenderPass{VK_NULL_HANDLE};
     VkPipelineLayout m_pipelineLayout{VK_NULL_HANDLE};
     VkPipeline m_pipeline{VK_NULL_HANDLE};
+    VkDescriptorSetLayout m_temporalDescriptorSetLayout{VK_NULL_HANDLE};
+    VkDescriptorPool m_temporalDescriptorPool{VK_NULL_HANDLE};
+    VkPipelineLayout m_temporalPipelineLayout{VK_NULL_HANDLE};
+    VkPipeline m_temporalPipeline{VK_NULL_HANDLE};
+    VkDescriptorSetLayout m_filterDescriptorSetLayout{VK_NULL_HANDLE};
+    VkDescriptorPool m_filterDescriptorPool{VK_NULL_HANDLE};
+    VkPipelineLayout m_filterPipelineLayout{VK_NULL_HANDLE};
+    VkPipeline m_filterPipeline{VK_NULL_HANDLE};
     VkDescriptorSetLayout m_denoiseDescriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool m_denoiseDescriptorPool{VK_NULL_HANDLE};
     VkPipelineLayout m_denoisePipelineLayout{VK_NULL_HANDLE};
