@@ -196,7 +196,7 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
 
         int maxDdaSteps = m_pathTracerSettings->maxDdaSteps;
         if (ImGui::SliderInt(
-            "Max DDA Steps",
+            "Max Ray March Steps",
             &maxDdaSteps,
             16,
             4096,

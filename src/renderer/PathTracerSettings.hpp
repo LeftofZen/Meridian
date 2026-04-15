@@ -12,7 +12,7 @@ struct PathTracerSettings {
 
     int maxBounces{4};
     int samplesPerPixel{4};
-    int maxDdaSteps{64};
+    int maxDdaSteps{192};
     bool denoiserEnabled{true};
     int denoiserAtrousIterations{4};
     float denoiserTemporalResponse{0.15F};
