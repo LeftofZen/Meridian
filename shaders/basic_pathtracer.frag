@@ -44,6 +44,13 @@ const float kHitThreshold = 0.035;
 const float kNormalEpsilon = 0.08;
 const float kMaxTraceDistance = 192.0;
 const float kInvPi = 0.31830988618;
+const float kTerrainHeightOffset = 8.0;
+const float kTerrainTerraceScale = 0.5;
+const float kTerrainTerraceHeight = 2.0;
+const float kRayMarchStepMultiplier = 0.7;
+const float kRayMarchMinStep = 0.04;
+const float kRayMarchMaxStep = 1.25;
+const int kBinaryRefinementSteps = 6;
 const vec3 kWorldUp = vec3(0.0, 1.0, 0.0);
 const uint kMaterialAir = 0u;
 const uint kMaterialGrass = 1u;
@@ -64,17 +71,17 @@ struct Hit {
     vec3 position;
     vec3 normal;
     vec3 albedo;
-    uint materialId;
+    uint material;
 };
 
 struct VoxelSample {
     bool occupied;
-    uint materialId;
+    uint material;
 };
 
 struct DistanceSample {
     float distance;
-    uint materialId;
+    uint material;
 };
 
 uint hash(uint state)
@@ -269,7 +276,8 @@ float terrainHeight(vec2 xz)
     float broad = fbm(broadCoord) * 42.0;
     float ridge = (1.0 - abs(fbm(detailCoord * 0.45 + vec2(9.0, -4.0)) * 2.0 - 1.0)) * 9.0;
     float detail = fbm(detailCoord + vec2(4.0, 11.0)) * 10.0;
-    float terraces = floor((broad + ridge + detail - 8.0) * 0.5) * 2.0;
+    float terraces = floor((broad + ridge + detail - kTerrainHeightOffset) *
+        kTerrainTerraceScale) * kTerrainTerraceHeight;
     return terraces;
 }
 
@@ -363,7 +371,7 @@ DistanceSample sceneDistance(vec3 position)
                 float distanceToVoxel = sdBox(position - (vec3(neighbor) + vec3(0.5)), vec3(0.5));
                 if (distanceToVoxel < bestDistance) {
                     bestDistance = distanceToVoxel;
-                    bestMaterialId = voxel.materialId;
+                    bestMaterialId = voxel.material;
                 }
             }
         }
@@ -403,7 +411,7 @@ bool sceneIntersect(Ray ray, float maxDistance, out Hit hit)
         if (marchSample.distance < kHitThreshold) {
             float lower = previousT;
             float upper = t;
-            for (int refineStep = 0; refineStep < 6; ++refineStep) {
+            for (int refineStep = 0; refineStep < kBinaryRefinementSteps; ++refineStep) {
                 float mid = 0.5 * (lower + upper);
                 if (sceneDistanceValue(ray.origin + ray.direction * mid) < kHitThreshold) {
                     upper = mid;
@@ -416,13 +424,16 @@ bool sceneIntersect(Ray ray, float maxDistance, out Hit hit)
             hit.t = upper;
             hit.position = ray.origin + ray.direction * hit.t;
             hit.normal = estimateNormal(hit.position);
-            hit.materialId = sceneDistance(hit.position - hit.normal * (kHitThreshold * 1.5)).materialId;
-            hit.albedo = materialAlbedo(hit.materialId, hit.position);
+            hit.material = sceneDistance(hit.position - hit.normal * (kHitThreshold * 1.5)).material;
+            hit.albedo = materialAlbedo(hit.material, hit.position);
             return true;
         }
 
         previousT = t;
-        t += clamp(marchSample.distance * 0.7, 0.04, 1.25);
+        t += clamp(
+            marchSample.distance * kRayMarchStepMultiplier,
+            kRayMarchMinStep,
+            kRayMarchMaxStep);
     }
 
     return false;
