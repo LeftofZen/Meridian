@@ -581,7 +581,7 @@ void WorldChunkManager::pruneChunksOutsideRetention()
         m_pendingRequests.end());
 
     for (auto tileIt = m_heightmapTiles.begin(); tileIt != m_heightmapTiles.end();) {
-        const ChunkCoord coord = tileIt->second.coord;
+        const ChunkCoord coord = tileIt->second->coord;
         const bool withinRetention =
             std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
             std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;

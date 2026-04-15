@@ -10,6 +10,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <limits>
 #include <unordered_map>
 
 namespace Meridian {
@@ -22,6 +24,12 @@ constexpr float kMinProjectionNearPlane = 0.01F;
 constexpr float kWireframeTerrainProbeOffset = 0.15F;
 constexpr std::uint32_t kPackedNodeWordCount = 9U;
 constexpr float kPi = 3.14159265F;
+constexpr float kLightGizmoAxisLengthMin = 3.5F;
+constexpr float kLightGizmoAxisLengthMax = 12.0F;
+constexpr float kLightGizmoAxisLengthDistanceScale = 0.10F;
+constexpr float kLightGizmoHandleRadiusPixels = 7.0F;
+constexpr float kLightGizmoHitRadiusPixels = 12.0F;
+constexpr float kLightGizmoLabelOffsetPixels = 10.0F;
 
 struct Vec3 {
     float x{0.0F};
@@ -29,9 +37,40 @@ struct Vec3 {
     float z{0.0F};
 };
 
+struct Ray3 {
+    Vec3 origin;
+    Vec3 direction;
+};
+
+struct CameraSpacePoint {
+    float x{0.0F};
+    float y{0.0F};
+    float z{0.0F};
+};
+
+struct ProjectedPoint {
+    bool visible{false};
+    ImVec2 screen{};
+    float depth{0.0F};
+};
+
+struct LightGizmoHitCandidate {
+    bool valid{false};
+    bool pointLight{true};
+    std::size_t lightIndex{0};
+    int axisIndex{0};
+    float screenDistance{std::numeric_limits<float>::max()};
+    float depth{std::numeric_limits<float>::max()};
+};
+
 [[nodiscard]] Vec3 toVec3(const std::array<float, 3>& value) noexcept
 {
     return Vec3{value[0], value[1], value[2]};
+}
+
+void storeVec3(std::array<float, 3>& target, Vec3 value) noexcept
+{
+    target = {value.x, value.y, value.z};
 }
 
 [[nodiscard]] Vec3 subtract(Vec3 left, Vec3 right) noexcept
@@ -54,6 +93,18 @@ struct Vec3 {
     return add(start, multiply(subtract(end, start), t));
 }
 
+[[nodiscard]] Vec3 axisDirection(int axisIndex) noexcept
+{
+    switch (axisIndex) {
+    case 0:
+        return Vec3{1.0F, 0.0F, 0.0F};
+    case 1:
+        return Vec3{0.0F, 1.0F, 0.0F};
+    default:
+        return Vec3{0.0F, 0.0F, 1.0F};
+    }
+}
+
 [[nodiscard]] float dot(Vec3 left, Vec3 right) noexcept
 {
     return left.x * right.x + left.y * right.y + left.z * right.z;
@@ -71,6 +122,11 @@ struct Vec3 {
 [[nodiscard]] float length(Vec3 value) noexcept
 {
     return std::sqrt(dot(value, value));
+}
+
+[[nodiscard]] float distance(Vec3 left, Vec3 right) noexcept
+{
+    return length(subtract(left, right));
 }
 
 [[nodiscard]] Vec3 normalize(Vec3 value) noexcept
@@ -241,12 +297,6 @@ struct CameraBasis {
     };
 }
 
-struct CameraSpacePoint {
-    float x{0.0F};
-    float y{0.0F};
-    float z{0.0F};
-};
-
 [[nodiscard]] CameraSpacePoint worldToCameraSpace(const CameraBasis& basis, Vec3 worldPoint) noexcept
 {
     const Vec3 relative = subtract(worldPoint, basis.position);
@@ -301,6 +351,163 @@ struct CameraSpacePoint {
         (-ndcY * 0.5F + 0.5F) * displaySize.y);
 }
 
+[[nodiscard]] ProjectedPoint projectWorldPoint(
+    const CameraBasis& basis,
+    Vec3 point,
+    float nearPlane,
+    float tanHalfFov,
+    float aspectRatio,
+    ImVec2 displaySize) noexcept
+{
+    const CameraSpacePoint cameraPoint = worldToCameraSpace(basis, point);
+    if (cameraPoint.z <= nearPlane) {
+        return ProjectedPoint{};
+    }
+
+    return ProjectedPoint{
+        .visible = true,
+        .screen = projectToScreen(cameraPoint, tanHalfFov, aspectRatio, displaySize),
+        .depth = cameraPoint.z,
+    };
+}
+
+[[nodiscard]] float axisLengthForDistance(float cameraDistance) noexcept
+{
+    return std::clamp(
+        cameraDistance * kLightGizmoAxisLengthDistanceScale,
+        kLightGizmoAxisLengthMin,
+        kLightGizmoAxisLengthMax);
+}
+
+[[nodiscard]] float screenDistance(ImVec2 left, ImVec2 right) noexcept
+{
+    const float deltaX = left.x - right.x;
+    const float deltaY = left.y - right.y;
+    return std::sqrt(deltaX * deltaX + deltaY * deltaY);
+}
+
+[[nodiscard]] ImU32 axisColor(int axisIndex, bool highlighted) noexcept
+{
+    switch (axisIndex) {
+    case 0:
+        return highlighted ? IM_COL32(255, 176, 176, 255) : IM_COL32(255, 96, 96, 255);
+    case 1:
+        return highlighted ? IM_COL32(176, 255, 176, 255) : IM_COL32(96, 255, 96, 255);
+    default:
+        return highlighted ? IM_COL32(176, 208, 255, 255) : IM_COL32(96, 160, 255, 255);
+    }
+}
+
+[[nodiscard]] ImU32 centerColor(bool pointLight) noexcept
+{
+    return pointLight ? IM_COL32(255, 214, 96, 255) : IM_COL32(255, 144, 64, 255);
+}
+
+[[nodiscard]] Ray3 screenRay(
+    ImVec2 mousePosition,
+    ImVec2 displaySize,
+    float aspectRatio,
+    float tanHalfFov,
+    const CameraBasis& basis) noexcept
+{
+    const float ndcX = (mousePosition.x / displaySize.x) * 2.0F - 1.0F;
+    const float ndcY = -((mousePosition.y / displaySize.y) * 2.0F - 1.0F);
+    return Ray3{
+        .origin = basis.position,
+        .direction = normalize(add(
+            basis.forward,
+            add(
+                multiply(basis.right, ndcX * tanHalfFov * aspectRatio),
+                multiply(basis.up, ndcY * tanHalfFov)))),
+    };
+}
+
+[[nodiscard]] bool pointOnAxisDragPlane(
+    Vec3 axisOrigin,
+    Vec3 axisDir,
+    const Ray3& ray,
+    Vec3 cameraForward,
+    float& outAxisParameter) noexcept
+{
+    Vec3 planeBinormal = cross(cameraForward, axisDir);
+    if (length(planeBinormal) <= 0.0001F) {
+        planeBinormal = cross(Vec3{0.0F, 1.0F, 0.0F}, axisDir);
+    }
+    if (length(planeBinormal) <= 0.0001F) {
+        planeBinormal = cross(Vec3{1.0F, 0.0F, 0.0F}, axisDir);
+    }
+
+    const Vec3 planeNormalUnnormalized = cross(axisDir, planeBinormal);
+    if (length(planeNormalUnnormalized) <= 0.0001F) {
+        return false;
+    }
+
+    const Vec3 planeNormal = normalize(planeNormalUnnormalized);
+    const float denominator = dot(planeNormal, ray.direction);
+    if (std::abs(denominator) <= 0.0001F) {
+        return false;
+    }
+
+    const float t = dot(planeNormal, subtract(axisOrigin, ray.origin)) / denominator;
+    const Vec3 intersectionPoint = add(ray.origin, multiply(ray.direction, t));
+    outAxisParameter = dot(subtract(intersectionPoint, axisOrigin), axisDir);
+    return true;
+}
+
+[[nodiscard]] bool drawWorldLine(
+    ImDrawList* drawList,
+    const CameraBasis& basis,
+    Vec3 start,
+    Vec3 end,
+    float nearPlane,
+    float tanHalfFov,
+    float aspectRatio,
+    ImVec2 displaySize,
+    ImU32 color,
+    float thickness) noexcept
+{
+    CameraSpacePoint startCamera = worldToCameraSpace(basis, start);
+    CameraSpacePoint endCamera = worldToCameraSpace(basis, end);
+    if (!clipLineToNearPlane(startCamera, endCamera, nearPlane)) {
+        return false;
+    }
+
+    const ImVec2 screenStart = projectToScreen(startCamera, tanHalfFov, aspectRatio, displaySize);
+    const ImVec2 screenEnd = projectToScreen(endCamera, tanHalfFov, aspectRatio, displaySize);
+    drawList->AddLine(screenStart, screenEnd, color, thickness);
+    return true;
+}
+
+[[nodiscard]] std::array<float, 3>* editableLightPosition(
+    LightingRenderSnapshot& lighting,
+    bool pointLight,
+    std::size_t lightIndex) noexcept
+{
+    if (pointLight) {
+        if (lightIndex >= lighting.pointLights.size()) {
+            return nullptr;
+        }
+
+        return &lighting.pointLights[lightIndex].positionMeters;
+    }
+
+    if (lightIndex >= lighting.areaLights.size()) {
+        return nullptr;
+    }
+
+    return &lighting.areaLights[lightIndex].centerMeters;
+}
+
+[[nodiscard]] Vec3 lightPosition(
+    const LightingRenderSnapshot& lighting,
+    bool pointLight,
+    std::size_t lightIndex) noexcept
+{
+    return pointLight
+        ? toVec3(lighting.pointLights[lightIndex].positionMeters)
+        : toVec3(lighting.areaLights[lightIndex].centerMeters);
+}
+
 } // namespace
 
 bool WorldSceneRenderer::init(VulkanContext& context)
@@ -312,6 +519,7 @@ bool WorldSceneRenderer::init(VulkanContext& context)
 void WorldSceneRenderer::shutdown()
 {
     m_context = nullptr;
+    clearActiveLightDrag();
 }
 
 void WorldSceneRenderer::handleEvent(const SDL_Event& event)
@@ -354,6 +562,10 @@ void WorldSceneRenderer::beginFrame()
         static_cast<unsigned long long>(m_renderStateSnapshot.world.inFlightChunkCount));
     ImGui::Text("Queued chunks: %llu",
         static_cast<unsigned long long>(m_renderStateSnapshot.world.pendingChunkCount));
+    ImGui::Text(
+        "Lights: %zu point, %zu area",
+        m_renderStateSnapshot.lighting.pointLights.size(),
+        m_renderStateSnapshot.lighting.areaLights.size());
     ImGui::Spacing();
     ImGui::TextWrapped(
         "This module now consumes a render-state snapshot, which is the place to grow world-facing data like camera state, lighting state, and GPU residency without coupling scene rendering to the simulation thread.");
@@ -384,6 +596,264 @@ void WorldSceneRenderer::beginFrame()
     ImGui::End();
 
     drawChunkWireframeOverlay();
+    drawLightGizmoOverlay();
+}
+
+void WorldSceneRenderer::clearActiveLightDrag() noexcept
+{
+    m_activeLightDrag = LightGizmoDragState{};
+}
+
+void WorldSceneRenderer::drawLightGizmoOverlay()
+{
+    if (m_context == nullptr || m_renderStateStore == nullptr) {
+        return;
+    }
+
+    const VkExtent2D swapchainExtent = m_context->getSwapchainExtent();
+    if (swapchainExtent.width == 0 || swapchainExtent.height == 0) {
+        return;
+    }
+
+    const ImVec2 displaySize{
+        static_cast<float>(swapchainExtent.width),
+        static_cast<float>(swapchainExtent.height),
+    };
+    const float aspectRatio = std::max(
+        m_renderStateSnapshot.camera.projection.aspectRatio,
+        kMinProjectionAspectRatio);
+    const float verticalFovDegrees = std::max(
+        m_renderStateSnapshot.camera.projection.verticalFovDegrees,
+        kMinProjectionVerticalFovDegrees);
+    const float nearPlane = std::max(
+        m_renderStateSnapshot.camera.projection.nearClipDistance,
+        kMinProjectionNearPlane);
+    const float tanHalfFov = std::tan(verticalFovDegrees * 0.5F * kPi / 180.0F);
+    const CameraBasis cameraBasis = buildCameraBasis(m_renderStateSnapshot.camera);
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mousePosition = io.MousePos;
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+
+    LightingRenderSnapshot lighting = m_renderStateSnapshot.lighting;
+    if ((m_activeLightDrag.active && m_activeLightDrag.pointLight &&
+            m_activeLightDrag.lightIndex >= lighting.pointLights.size()) ||
+        (m_activeLightDrag.active && !m_activeLightDrag.pointLight &&
+            m_activeLightDrag.lightIndex >= lighting.areaLights.size())) {
+        clearActiveLightDrag();
+    }
+
+    LightGizmoHitCandidate hoveredCandidate{};
+    const bool canPickHandle = !m_activeLightDrag.active && !io.WantCaptureMouse;
+
+    const auto considerLightHandles = [&](bool pointLight, std::size_t lightIndex, Vec3 position) {
+        const float axisLength = axisLengthForDistance(distance(cameraBasis.position, position));
+        for (int axisIndex = 0; axisIndex < 3; ++axisIndex) {
+            const Vec3 handlePosition = add(position, multiply(axisDirection(axisIndex), axisLength));
+            const ProjectedPoint projectedHandle = projectWorldPoint(
+                cameraBasis,
+                handlePosition,
+                nearPlane,
+                tanHalfFov,
+                aspectRatio,
+                displaySize);
+            if (!projectedHandle.visible) {
+                continue;
+            }
+
+            const float hitDistance = screenDistance(projectedHandle.screen, mousePosition);
+            if (hitDistance > kLightGizmoHitRadiusPixels) {
+                continue;
+            }
+
+            if (!hoveredCandidate.valid ||
+                hitDistance < hoveredCandidate.screenDistance ||
+                (std::abs(hitDistance - hoveredCandidate.screenDistance) < 0.001F &&
+                    projectedHandle.depth < hoveredCandidate.depth)) {
+                hoveredCandidate = LightGizmoHitCandidate{
+                    .valid = true,
+                    .pointLight = pointLight,
+                    .lightIndex = lightIndex,
+                    .axisIndex = axisIndex,
+                    .screenDistance = hitDistance,
+                    .depth = projectedHandle.depth,
+                };
+            }
+        }
+    };
+
+    if (canPickHandle) {
+        for (std::size_t lightIndex = 0; lightIndex < lighting.pointLights.size(); ++lightIndex) {
+            considerLightHandles(true, lightIndex, lightPosition(lighting, true, lightIndex));
+        }
+        for (std::size_t lightIndex = 0; lightIndex < lighting.areaLights.size(); ++lightIndex) {
+            considerLightHandles(false, lightIndex, lightPosition(lighting, false, lightIndex));
+        }
+    }
+
+    if (!m_activeLightDrag.active && io.MouseClicked[0] && hoveredCandidate.valid) {
+        const Vec3 origin = lightPosition(lighting, hoveredCandidate.pointLight, hoveredCandidate.lightIndex);
+        const Vec3 dragAxis = axisDirection(hoveredCandidate.axisIndex);
+        const Ray3 ray = screenRay(mousePosition, displaySize, aspectRatio, tanHalfFov, cameraBasis);
+        float axisParameter = 0.0F;
+        if (pointOnAxisDragPlane(origin, dragAxis, ray, cameraBasis.forward, axisParameter)) {
+            m_activeLightDrag.active = true;
+            m_activeLightDrag.pointLight = hoveredCandidate.pointLight;
+            m_activeLightDrag.lightIndex = hoveredCandidate.lightIndex;
+            m_activeLightDrag.axisIndex = hoveredCandidate.axisIndex;
+            m_activeLightDrag.startPosition = {origin.x, origin.y, origin.z};
+            m_activeLightDrag.startAxisParameter = axisParameter;
+        }
+    }
+
+    bool lightingChanged = false;
+    if (m_activeLightDrag.active) {
+        if (!io.MouseDown[0]) {
+            clearActiveLightDrag();
+        } else {
+            std::array<float, 3>* dragPosition = editableLightPosition(
+                lighting,
+                m_activeLightDrag.pointLight,
+                m_activeLightDrag.lightIndex);
+            if (dragPosition == nullptr) {
+                clearActiveLightDrag();
+            } else {
+                const Vec3 dragOrigin = toVec3(m_activeLightDrag.startPosition);
+                const Vec3 dragAxis = axisDirection(m_activeLightDrag.axisIndex);
+                const Ray3 ray = screenRay(mousePosition, displaySize, aspectRatio, tanHalfFov, cameraBasis);
+                float axisParameter = 0.0F;
+                if (pointOnAxisDragPlane(dragOrigin, dragAxis, ray, cameraBasis.forward, axisParameter)) {
+                    const float delta = axisParameter - m_activeLightDrag.startAxisParameter;
+                    storeVec3(*dragPosition, add(dragOrigin, multiply(dragAxis, delta)));
+                    lightingChanged = true;
+                }
+            }
+        }
+    }
+
+    const auto drawPointMarker = [&](Vec3 position, bool pointLight, const char* label) {
+        const ProjectedPoint projectedCenter = projectWorldPoint(
+            cameraBasis,
+            position,
+            nearPlane,
+            tanHalfFov,
+            aspectRatio,
+            displaySize);
+        if (!projectedCenter.visible) {
+            return;
+        }
+
+        drawList->AddCircleFilled(projectedCenter.screen, 5.0F, centerColor(pointLight));
+        drawList->AddCircle(projectedCenter.screen, 6.5F, IM_COL32(16, 18, 20, 255), 0, 1.5F);
+        drawList->AddText(
+            ImVec2(
+                projectedCenter.screen.x + kLightGizmoLabelOffsetPixels,
+                projectedCenter.screen.y - kLightGizmoLabelOffsetPixels),
+            IM_COL32(255, 255, 255, 255),
+            label);
+    };
+
+    const auto drawAxes = [&](bool pointLight, std::size_t lightIndex, Vec3 position) {
+        const bool isActiveLight =
+            m_activeLightDrag.active &&
+            m_activeLightDrag.pointLight == pointLight &&
+            m_activeLightDrag.lightIndex == lightIndex;
+        const bool isHoveredLight =
+            hoveredCandidate.valid &&
+            hoveredCandidate.pointLight == pointLight &&
+            hoveredCandidate.lightIndex == lightIndex;
+        const float axisLength = axisLengthForDistance(distance(cameraBasis.position, position));
+
+        for (int axisIndex = 0; axisIndex < 3; ++axisIndex) {
+            const bool highlighted =
+                (isActiveLight && m_activeLightDrag.axisIndex == axisIndex) ||
+                (isHoveredLight && hoveredCandidate.axisIndex == axisIndex);
+            const Vec3 axisEnd = add(position, multiply(axisDirection(axisIndex), axisLength));
+            const ImU32 color = axisColor(axisIndex, highlighted);
+            const float lineThickness = highlighted ? 3.0F : 2.0F;
+            if (!drawWorldLine(
+                    drawList,
+                    cameraBasis,
+                    position,
+                    axisEnd,
+                    nearPlane,
+                    tanHalfFov,
+                    aspectRatio,
+                    displaySize,
+                    color,
+                    lineThickness)) {
+                continue;
+            }
+
+            const ProjectedPoint projectedHandle = projectWorldPoint(
+                cameraBasis,
+                axisEnd,
+                nearPlane,
+                tanHalfFov,
+                aspectRatio,
+                displaySize);
+            if (!projectedHandle.visible) {
+                continue;
+            }
+
+            drawList->AddCircleFilled(
+                projectedHandle.screen,
+                highlighted ? kLightGizmoHandleRadiusPixels + 1.5F : kLightGizmoHandleRadiusPixels,
+                color);
+            drawList->AddCircle(
+                projectedHandle.screen,
+                highlighted ? kLightGizmoHandleRadiusPixels + 2.5F : kLightGizmoHandleRadiusPixels + 1.5F,
+                IM_COL32(20, 22, 24, 255),
+                0,
+                1.5F);
+        }
+    };
+
+    for (std::size_t lightIndex = 0; lightIndex < lighting.pointLights.size(); ++lightIndex) {
+        const Vec3 position = lightPosition(lighting, true, lightIndex);
+        char label[16]{};
+        std::snprintf(label, sizeof(label), "P%zu", lightIndex);
+        drawPointMarker(position, true, label);
+        drawAxes(true, lightIndex, position);
+    }
+
+    constexpr std::array<std::array<int, 2>, 4> areaEdges{{
+        {0, 1}, {1, 2}, {2, 3}, {3, 0},
+    }};
+    for (std::size_t lightIndex = 0; lightIndex < lighting.areaLights.size(); ++lightIndex) {
+        const AreaLightRenderState& light = lighting.areaLights[lightIndex];
+        const Vec3 center = toVec3(light.centerMeters);
+        const Vec3 rightExtent = toVec3(light.rightExtentMeters);
+        const Vec3 upExtent = toVec3(light.upExtentMeters);
+        const std::array<Vec3, 4> corners{{
+            add(add(center, rightExtent), upExtent),
+            add(subtract(center, rightExtent), upExtent),
+            subtract(subtract(center, rightExtent), upExtent),
+            add(subtract(center, upExtent), rightExtent),
+        }};
+        for (const auto& edge : areaEdges) {
+            (void)drawWorldLine(
+                drawList,
+                cameraBasis,
+                corners[edge[0]],
+                corners[edge[1]],
+                nearPlane,
+                tanHalfFov,
+                aspectRatio,
+                displaySize,
+                IM_COL32(255, 176, 64, 220),
+                2.0F);
+        }
+
+        char label[16]{};
+        std::snprintf(label, sizeof(label), "A%zu", lightIndex);
+        drawPointMarker(center, false, label);
+        drawAxes(false, lightIndex, center);
+    }
+
+    if (lightingChanged) {
+        m_renderStateStore->updateLightingState(lighting);
+        m_renderStateSnapshot.lighting = std::move(lighting);
+    }
 }
 
 void WorldSceneRenderer::drawChunkWireframeOverlay()

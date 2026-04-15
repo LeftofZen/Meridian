@@ -118,8 +118,6 @@ private:
         std::uint32_t typeFilter,
         VkMemoryPropertyFlags properties) const;
     [[nodiscard]] static ChunkKey tileKey(ChunkCoord coord) noexcept;
-    [[nodiscard]] static std::filesystem::path shaderPath(const char* fileName);
-
     VulkanContext* m_context{nullptr};
     TerrainHeightmapSettings m_settings;
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};

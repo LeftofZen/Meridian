@@ -3,6 +3,38 @@
 #include "core/Logger.hpp"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3_image/SDL_image.h>
+
+#include <filesystem>
+
+namespace {
+
+constexpr const char* kWindowIconFileName = "meridian-icon.png";
+
+void SetWindowIcon(SDL_Window* window)
+{
+    char* const basePath = SDL_GetBasePath();
+    if (basePath == nullptr) {
+        MRD_WARN("SDL_GetBasePath failed while locating the window icon: {}", SDL_GetError());
+        return;
+    }
+
+    const std::filesystem::path iconPath = std::filesystem::path(basePath) / kWindowIconFileName;
+    SDL_free(basePath);
+
+    SDL_Surface* iconSurface = IMG_Load(iconPath.string().c_str());
+
+    if (iconSurface == nullptr) {
+        MRD_WARN("Failed to load window icon '{}': {}", iconPath.string(), IMG_GetError());
+        return;
+    }
+
+    SDL_SetWindowIcon(window, iconSurface);
+    SDL_DestroySurface(iconSurface);
+}
+
+} // namespace
 
 namespace Meridian {
 
@@ -31,6 +63,8 @@ bool Window::init()
         SDL_Quit();
         return false;
     }
+
+    SetWindowIcon(m_window);
 
     MRD_INFO("Window '{}' created ({}x{})", m_config.title, m_config.width, m_config.height);
     return true;

@@ -54,6 +54,7 @@ public:
 
 private:
     void buildFrameStatsWindow();
+    void buildLightingControls();
 
     VulkanContext* m_context{nullptr};
     PathTracerSettings* m_pathTracerSettings{nullptr};

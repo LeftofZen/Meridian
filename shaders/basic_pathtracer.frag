@@ -2,10 +2,28 @@
 
 layout(location = 0) in vec2 inUv;
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outGuide;
 
 struct GpuChunk {
     ivec4 coordAndResolution;
     uvec4 octreeData;
+};
+
+struct GpuDirectionalLight {
+    vec4 directionAndIntensity;
+    vec4 color;
+};
+
+struct GpuPointLight {
+    vec4 positionAndRange;
+    vec4 colorAndIntensity;
+};
+
+struct GpuAreaLight {
+    vec4 centerAndIntensity;
+    vec4 rightExtentAndDoubleSided;
+    vec4 upExtent;
+    vec4 color;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer ChunkBuffer {
@@ -19,6 +37,13 @@ layout(set = 0, binding = 1, std430) readonly buffer OctreeNodeBuffer {
 layout(set = 0, binding = 2, std430) readonly buffer ChunkLookupBuffer {
     uint chunkLookup[];
 };
+
+layout(set = 0, binding = 3, std430) readonly buffer LightBuffer {
+    uvec4 counts;
+    GpuDirectionalLight sun;
+    GpuPointLight pointLights[8];
+    GpuAreaLight areaLights[8];
+} lights;
 
 layout(push_constant) uniform PushConstants {
     vec4 sceneMin;
@@ -34,6 +59,7 @@ layout(push_constant) uniform PushConstants {
 const float kRayEpsilon = 0.001;
 const float kChunkSize = 32.0;
 const vec3 kWorldUp = vec3(0.0, 1.0, 0.0);
+const float kInvPi = 0.31830988618;
 
 const uint kMaterialAir = 0u;
 const uint kMaterialGrass = 1u;
@@ -100,14 +126,31 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
         bitangent * localDirection.z;
 }
 
-vec3 skyColor(vec3 direction)
+vec3 sunDirection()
+{
+    return normalize(lights.sun.directionAndIntensity.xyz);
+}
+
+vec3 sunColor()
+{
+    return lights.sun.color.xyz;
+}
+
+float sunIntensity()
+{
+    return lights.sun.directionAndIntensity.w;
+}
+
+vec3 skyBaseColor(vec3 direction)
 {
     const float horizon = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
-    const vec3 sky = mix(vec3(0.68, 0.77, 0.92), vec3(0.15, 0.30, 0.58), horizon);
+    return mix(vec3(0.68, 0.77, 0.92), vec3(0.15, 0.30, 0.58), horizon);
+}
 
-    const vec3 sunDirection = normalize(vec3(-0.35, 0.82, -0.28));
-    const float sunAmount = pow(max(dot(direction, sunDirection), 0.0), 256.0);
-    return sky + vec3(5.0, 4.8, 4.2) * sunAmount;
+vec3 sunDiscColor(vec3 direction)
+{
+    const float sunAmount = pow(max(dot(direction, sunDirection()), 0.0), 256.0);
+    return sunColor() * sunIntensity() * sunAmount;
 }
 
 vec3 materialAlbedo(uint materialId)
@@ -472,6 +515,124 @@ bool sceneIntersect(Ray ray, out Hit hit)
     return false;
 }
 
+bool isShadowed(vec3 origin, vec3 direction, float maxDistance)
+{
+    Ray shadowRay;
+    shadowRay.origin = origin;
+    shadowRay.direction = direction;
+
+    Hit shadowHit;
+    if (!sceneIntersect(shadowRay, shadowHit)) {
+        return false;
+    }
+
+    return shadowHit.t < maxDistance - kRayEpsilon * 2.0;
+}
+
+vec3 evaluateSunLight(Hit hit)
+{
+    const float ndotl = max(dot(hit.normal, sunDirection()), 0.0);
+    if (ndotl <= 0.0 || sunIntensity() <= 0.0) {
+        return vec3(0.0);
+    }
+
+    if (isShadowed(hit.position + hit.normal * kRayEpsilon, sunDirection(), 1e30)) {
+        return vec3(0.0);
+    }
+
+    return sunColor() * sunIntensity() * ndotl;
+}
+
+vec3 evaluatePointLight(Hit hit, GpuPointLight light)
+{
+    const vec3 toLight = light.positionAndRange.xyz - hit.position;
+    const float distanceSquared = dot(toLight, toLight);
+    if (distanceSquared <= 1e-4) {
+        return vec3(0.0);
+    }
+
+    const float distanceToLight = sqrt(distanceSquared);
+    const float lightRange = light.positionAndRange.w;
+    if (distanceToLight >= lightRange) {
+        return vec3(0.0);
+    }
+
+    const vec3 lightDirection = toLight / distanceToLight;
+    const float ndotl = max(dot(hit.normal, lightDirection), 0.0);
+    if (ndotl <= 0.0) {
+        return vec3(0.0);
+    }
+
+    const float rangeFade = pow(clamp(1.0 - distanceToLight / max(lightRange, 0.001), 0.0, 1.0), 2.0);
+    if (rangeFade <= 0.0) {
+        return vec3(0.0);
+    }
+
+    if (isShadowed(hit.position + hit.normal * kRayEpsilon, lightDirection, distanceToLight)) {
+        return vec3(0.0);
+    }
+
+    return light.colorAndIntensity.xyz * light.colorAndIntensity.w * rangeFade * ndotl / max(distanceSquared, 1.0);
+}
+
+vec3 evaluateAreaLight(Hit hit, GpuAreaLight light, inout uint rngState)
+{
+    const float sampleU = randomFloat(rngState) * 2.0 - 1.0;
+    const float sampleV = randomFloat(rngState) * 2.0 - 1.0;
+    const vec3 rightExtent = light.rightExtentAndDoubleSided.xyz;
+    const vec3 upExtent = light.upExtent.xyz;
+    const vec3 lightSample =
+        light.centerAndIntensity.xyz +
+        rightExtent * sampleU +
+        upExtent * sampleV;
+    const vec3 toLight = lightSample - hit.position;
+    const float distanceSquared = dot(toLight, toLight);
+    if (distanceSquared <= 1e-4) {
+        return vec3(0.0);
+    }
+
+    const float distanceToLight = sqrt(distanceSquared);
+    const vec3 lightDirection = toLight / distanceToLight;
+    const float surfaceCosine = max(dot(hit.normal, lightDirection), 0.0);
+    if (surfaceCosine <= 0.0) {
+        return vec3(0.0);
+    }
+
+    const vec3 lightNormal = normalize(cross(rightExtent, upExtent));
+    float lightCosine = dot(lightNormal, -lightDirection);
+    if (light.rightExtentAndDoubleSided.w >= 0.5) {
+        lightCosine = abs(lightCosine);
+    }
+
+    if (lightCosine <= 0.0) {
+        return vec3(0.0);
+    }
+
+    if (isShadowed(hit.position + hit.normal * kRayEpsilon, lightDirection, distanceToLight)) {
+        return vec3(0.0);
+    }
+
+    const float lightArea = 4.0 * length(cross(rightExtent, upExtent));
+    return light.color.xyz * light.centerAndIntensity.w * lightArea * surfaceCosine * lightCosine / max(distanceSquared, 1.0);
+}
+
+vec3 evaluateDirectLighting(Hit hit, inout uint rngState)
+{
+    vec3 directLighting = evaluateSunLight(hit);
+
+    const uint pointLightCount = min(lights.counts.x, 8u);
+    for (uint lightIndex = 0u; lightIndex < pointLightCount; ++lightIndex) {
+        directLighting += evaluatePointLight(hit, lights.pointLights[lightIndex]);
+    }
+
+    const uint areaLightCount = min(lights.counts.y, 8u);
+    for (uint lightIndex = 0u; lightIndex < areaLightCount; ++lightIndex) {
+        directLighting += evaluateAreaLight(hit, lights.areaLights[lightIndex], rngState);
+    }
+
+    return directLighting;
+}
+
 vec3 tracePath(Ray ray, inout uint rngState)
 {
     vec3 radiance = vec3(0.0);
@@ -480,10 +641,14 @@ vec3 tracePath(Ray ray, inout uint rngState)
     for (uint bounce = 0u; bounce < max(pc.settings.z, 1u); ++bounce) {
         Hit hit;
         if (!sceneIntersect(ray, hit)) {
-            radiance += throughput * skyColor(ray.direction);
+            radiance += throughput * skyBaseColor(ray.direction);
+            if (bounce == 0u) {
+                radiance += throughput * sunDiscColor(ray.direction);
+            }
             break;
         }
 
+        radiance += throughput * hit.albedo * evaluateDirectLighting(hit, rngState) * kInvPi;
         throughput *= hit.albedo;
         if (max(throughput.r, max(throughput.g, throughput.b)) < 0.02) {
             break;
@@ -494,6 +659,38 @@ vec3 tracePath(Ray ray, inout uint rngState)
     }
 
     return radiance;
+}
+
+float luminance(vec3 color)
+{
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+vec4 primarySurfaceGuide(
+    vec2 pixel,
+    vec3 forward,
+    vec3 right,
+    vec3 up,
+    float aspectRatio,
+    float tanHalfFov)
+{
+    vec2 ndc = (pixel / pc.frameData.xy) * 2.0 - 1.0;
+    ndc.x *= aspectRatio;
+    ndc.y = -ndc.y;
+
+    Ray ray;
+    ray.origin = pc.cameraPosition.xyz;
+    ray.direction = normalize(
+        forward +
+        right * (ndc.x * tanHalfFov) +
+        up * (ndc.y * tanHalfFov));
+
+    Hit hit;
+    if (sceneIntersect(ray, hit)) {
+        return vec4(hit.normal * 0.5 + 0.5, hit.t);
+    }
+
+    return vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
 }
 
 void main()
@@ -511,7 +708,17 @@ void main()
     const float aspectRatio = max(pc.frameData.w, 0.01);
     const float tanHalfFov = tan(radians(max(pc.frameData.z, 1.0)) * 0.5);
 
+    outGuide = primarySurfaceGuide(
+        pixel,
+        forward,
+        right,
+        up,
+        aspectRatio,
+        tanHalfFov);
+
     vec3 color = vec3(0.0);
+    float luminanceSum = 0.0;
+    float luminanceSquaredSum = 0.0;
     const uint sampleCount = max(pc.settings.y, 1u);
     for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
         const vec2 jitter = vec2(randomFloat(rngState), randomFloat(rngState));
@@ -526,11 +733,18 @@ void main()
             right * (ndc.x * tanHalfFov) +
             up * (ndc.y * tanHalfFov));
 
-        color += tracePath(ray, rngState);
+        const vec3 sampleRadiance = tracePath(ray, rngState);
+        color += sampleRadiance;
+
+        const float sampleLuminance = luminance(sampleRadiance);
+        luminanceSum += sampleLuminance;
+        luminanceSquaredSum += sampleLuminance * sampleLuminance;
     }
 
     color /= float(sampleCount);
-    color = color / (vec3(1.0) + color);
-    color = pow(color, vec3(1.0 / 2.2));
-    outColor = vec4(color, 1.0);
+    const float meanLuminance = luminanceSum / float(sampleCount);
+    const float variance = max(
+        luminanceSquaredSum / float(sampleCount) - meanLuminance * meanLuminance,
+        0.0);
+    outColor = vec4(color, variance);
 }

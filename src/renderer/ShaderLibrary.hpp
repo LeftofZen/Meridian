@@ -23,9 +23,12 @@ public:
     [[nodiscard]] VkShaderModule loadModule(
         std::string_view name,
         const std::filesystem::path& path);
+    [[nodiscard]] VkShaderModule loadBuiltInModule(std::string_view name);
     void clear() noexcept;
 
 private:
+    [[nodiscard]] static bool isBuiltInShader(std::string_view name) noexcept;
+    [[nodiscard]] static std::filesystem::path builtInShaderPath(std::string_view name);
     [[nodiscard]] static std::vector<std::uint32_t> readSpirvFile(
         const std::filesystem::path& path);
 

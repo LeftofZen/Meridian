@@ -20,6 +20,7 @@ public:
     virtual void handleEvent(const SDL_Event& /*event*/) {}
     virtual void configureFrame(RenderFrameConfig& /*config*/) {}
     virtual void beginFrame() {}
+    virtual void recordPreRender(VkCommandBuffer /*commandBuffer*/) {}
     virtual void recordFrame(VkCommandBuffer /*commandBuffer*/) {}
 };
 

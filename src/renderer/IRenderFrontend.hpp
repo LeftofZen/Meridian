@@ -19,6 +19,7 @@ public:
     virtual void shutdown() = 0;
     virtual void handleEvent(const SDL_Event& event) = 0;
     virtual void beginFrame() = 0;
+    virtual void recordPreRender(VkCommandBuffer commandBuffer) = 0;
     virtual void recordFrame(VkCommandBuffer commandBuffer) = 0;
     [[nodiscard]] virtual const RenderFrameConfig& getFrameConfig() const noexcept = 0;
 };

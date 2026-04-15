@@ -2,10 +2,22 @@
 
 #include "core/Logger.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <fstream>
+#include <ranges>
 
 namespace {
+
+constexpr std::array<std::string_view, 6> kBuiltInShaderNames{
+    "fullscreen_triangle.vert",
+    "basic_pathtracer.frag",
+    "pathtracer_denoise.frag",
+    "pathtracer_svgf_temporal.frag",
+    "pathtracer_svgf_atrous.frag",
+    "terrain_heightmap.comp",
+};
 
 void setShaderModuleDebugName(VkDevice device, VkShaderModule module, std::string_view name) noexcept
 {
@@ -66,6 +78,16 @@ VkShaderModule ShaderLibrary::loadModule(
     return module;
 }
 
+VkShaderModule ShaderLibrary::loadBuiltInModule(std::string_view name)
+{
+    if (!isBuiltInShader(name)) {
+        MRD_ERROR("Shader '{}' is not registered in the built-in shader library", name);
+        return VK_NULL_HANDLE;
+    }
+
+    return loadModule(name, builtInShaderPath(name));
+}
+
 void ShaderLibrary::clear() noexcept
 {
     if (m_device == VK_NULL_HANDLE) {
@@ -79,6 +101,17 @@ void ShaderLibrary::clear() noexcept
         }
     }
     m_modules.clear();
+}
+
+bool ShaderLibrary::isBuiltInShader(std::string_view name) noexcept
+{
+    return std::ranges::find(kBuiltInShaderNames, name) != kBuiltInShaderNames.end();
+}
+
+std::filesystem::path ShaderLibrary::builtInShaderPath(std::string_view name)
+{
+    return std::filesystem::path{MERIDIAN_SHADER_OUTPUT_DIR} /
+        std::filesystem::path{std::string{name} + ".spv"};
 }
 
 std::vector<std::uint32_t> ShaderLibrary::readSpirvFile(

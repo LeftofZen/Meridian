@@ -25,6 +25,7 @@ if (MSVC_VERSION LESS 1950 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 endif()
 
 find_package(SDL3 CONFIG REQUIRED)
+find_package(SDL3_image CONFIG REQUIRED)
 find_package(volk CONFIG REQUIRED)
 find_package(Jolt CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
@@ -36,7 +37,6 @@ find_package(glm CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(flatbuffers CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
-find_package(imgui CONFIG REQUIRED)
 find_package(Tracy CONFIG REQUIRED)
 find_package(unofficial-lua CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
@@ -59,6 +59,9 @@ file(TO_CMAKE_PATH "${MERIDIAN_SHADER_OUTPUT_DIR}" MERIDIAN_SHADER_OUTPUT_DIR_CM
 set(MERIDIAN_SHADER_SOURCES
     shaders/fullscreen_triangle.vert
     shaders/basic_pathtracer.frag
+    shaders/pathtracer_denoise.frag
+    shaders/pathtracer_svgf_temporal.frag
+    shaders/pathtracer_svgf_atrous.frag
     shaders/terrain_heightmap.comp
 )
 
@@ -86,6 +89,14 @@ endforeach()
 
 add_custom_target(MeridianShaders ALL DEPENDS ${MERIDIAN_SHADER_OUTPUTS})
 add_dependencies(Meridian MeridianShaders)
+
+find_package(imgui CONFIG REQUIRED)
+
+add_library(MeridianImGui INTERFACE)
+target_link_libraries(MeridianImGui INTERFACE imgui::imgui)
+target_compile_definitions(MeridianImGui INTERFACE
+    IMGUI_IMPL_VULKAN_NO_PROTOTYPES=1
+    VK_NO_PROTOTYPES=1)
 
 target_sources(Meridian PRIVATE
     src/main.cpp
@@ -119,6 +130,7 @@ target_include_directories(Meridian PRIVATE
 
 target_link_libraries(Meridian PRIVATE
     SDL3::SDL3
+    SDL3_image::SDL3_image
     volk::volk
     Jolt::Jolt
     EnTT::EnTT
@@ -136,7 +148,7 @@ target_link_libraries(Meridian PRIVATE
     RecastNavigation::Recast
     RecastNavigation::Detour
     Taskflow::Taskflow
-    imgui::imgui
+    MeridianImGui
 )
 
 if (WIN32)
@@ -144,6 +156,9 @@ if (WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_RUNTIME_DLLS:Meridian>
             $<TARGET_FILE_DIR:Meridian>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/meridian-icon.png"
+            $<TARGET_FILE_DIR:Meridian>/meridian-icon.png
         COMMAND_EXPAND_LISTS
     )
 
@@ -214,7 +229,6 @@ if (MSVC)
 endif()
 
 target_compile_definitions(Meridian PRIVATE
-    IMGUI_IMPL_VULKAN_USE_VOLK=1
     MERIDIAN_SHADER_OUTPUT_DIR="${MERIDIAN_SHADER_OUTPUT_DIR_CMAKE}"
     SOL_ALL_SAFETIES_ON=1
     TRACY_ENABLE
