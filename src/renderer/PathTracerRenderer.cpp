@@ -166,6 +166,10 @@ void PathTracerRenderer::beginFrame()
         }
     }
 
+    if (!updateAtmosphereData(frameResources)) {
+        MRD_WARN("Path tracer atmosphere upload failed");
+    }
+
     const bool historyValid =
         previousFrameSlot != m_currentFrameSlot &&
         previousFrameResources.historyValid &&
@@ -637,11 +641,17 @@ bool PathTracerRenderer::createDescriptorResources()
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        VkDescriptorSetLayoutBinding{
+            .binding = 4,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = static_cast<std::uint32_t>(std::size(bindings));
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(
@@ -661,7 +671,7 @@ bool PathTracerRenderer::createDescriptorResources()
     const VkDescriptorPoolSize poolSizes[] = {
         VkDescriptorPoolSize{
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = static_cast<std::uint32_t>(frameCount * 4U),
+            .descriptorCount = static_cast<std::uint32_t>(frameCount * 5U),
         },
     };
 
@@ -1967,6 +1977,81 @@ bool PathTracerRenderer::uploadSceneData(FrameResources& frameResources)
     return true;
 }
 
+bool PathTracerRenderer::updateAtmosphereData(FrameResources& frameResources)
+{
+    if (m_context == nullptr || frameResources.descriptorSet == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    const VkDeviceSize atmosphereBufferSize =
+        static_cast<VkDeviceSize>(sizeof(GpuAtmosphereParameters));
+    if (!ensureBufferCapacity(frameResources.atmosphereBuffer, atmosphereBufferSize)) {
+        return false;
+    }
+
+    GpuAtmosphereParameters atmosphere{};
+    atmosphere.planetAndScaleHeights = {
+        m_settings.atmosphereEarthRadiusMeters,
+        m_settings.atmosphereThicknessMeters,
+        m_settings.atmosphereRayleighScaleMeters,
+        m_settings.atmosphereMieScaleMeters,
+    };
+    atmosphere.coefficients = {
+        m_settings.atmosphereRayleighCoefficient,
+        m_settings.atmosphereMieCoefficient,
+        m_settings.atmosphereOzoneCoefficient,
+        m_settings.atmosphereDensityScale,
+    };
+    atmosphere.betaRayleigh = packVec4(m_settings.atmosphereBetaRayleigh, 0.0F);
+    atmosphere.betaMie = packVec4(m_settings.atmosphereBetaMie, 0.0F);
+    atmosphere.betaOzone = packVec4(m_settings.atmosphereBetaOzone, 0.0F);
+    atmosphere.ozoneParameters = {
+        m_settings.atmosphereOzoneCenterAltitudeMeters,
+        m_settings.atmosphereOzoneHalfWidthMeters,
+        m_settings.atmosphereLightExposure,
+        m_settings.atmosphereMieAnisotropy,
+    };
+    atmosphere.sunDiscParameters = {
+        m_settings.atmosphereSunDiscAngularSize,
+        m_settings.atmosphereSunDiscSoftness,
+        m_settings.atmosphereSunDiscBrightness,
+        0.0F,
+    };
+    atmosphere.controls = {
+        m_settings.atmosphereEnabled ? 1U : 0U,
+        static_cast<std::uint32_t>(m_settings.atmosphereViewSampleCount),
+        static_cast<std::uint32_t>(m_settings.atmosphereLightSampleCount),
+        0U,
+    };
+
+    void* mappedData = nullptr;
+    vkMapMemory(
+        m_context->getDevice(),
+        frameResources.atmosphereBuffer.memory,
+        0,
+        atmosphereBufferSize,
+        0,
+        &mappedData);
+    std::memcpy(mappedData, &atmosphere, static_cast<std::size_t>(atmosphereBufferSize));
+    vkUnmapMemory(m_context->getDevice(), frameResources.atmosphereBuffer.memory);
+
+    const VkDescriptorBufferInfo atmosphereBufferInfo{
+        .buffer = frameResources.atmosphereBuffer.buffer,
+        .offset = 0,
+        .range = atmosphereBufferSize,
+    };
+    const VkWriteDescriptorSet atmosphereWrite{
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = frameResources.descriptorSet,
+        .dstBinding = 4,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo = &atmosphereBufferInfo,
+    };
+    vkUpdateDescriptorSets(m_context->getDevice(), 1, &atmosphereWrite, 0, nullptr);
+    return true;
+}
+
 bool PathTracerRenderer::ensureBufferCapacity(GpuBuffer& buffer, VkDeviceSize sizeInBytes)
 {
     const VkDeviceSize requiredSize = std::max<VkDeviceSize>(sizeInBytes, sizeof(std::uint32_t));
@@ -2374,6 +2459,7 @@ void PathTracerRenderer::destroyDescriptorResources() noexcept
         destroyBuffer(frameResources.octreeBuffer);
         destroyBuffer(frameResources.chunkLookupBuffer);
         destroyBuffer(frameResources.lightBuffer);
+        destroyBuffer(frameResources.atmosphereBuffer);
         if (m_context != nullptr && frameResources.traceFramebuffer != VK_NULL_HANDLE) {
             vkDestroyFramebuffer(m_context->getDevice(), frameResources.traceFramebuffer, nullptr);
         }

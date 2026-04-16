@@ -14,14 +14,14 @@ constexpr const char* kWindowIconFileName = "meridian-icon.png";
 
 void SetWindowIcon(SDL_Window* window)
 {
-    char* const basePath = SDL_GetBasePath();
+    const char* const basePath = SDL_GetBasePath();
     if (basePath == nullptr) {
         MRD_WARN("SDL_GetBasePath failed while locating the window icon: {}", SDL_GetError());
         return;
     }
 
     const std::filesystem::path iconPath = std::filesystem::path(basePath) / kWindowIconFileName;
-    SDL_free(basePath);
+    SDL_free(const_cast<char*>(basePath));
 
     SDL_Surface* iconSurface = IMG_Load(iconPath.string().c_str());
 

@@ -45,6 +45,21 @@ layout(set = 0, binding = 3, std430) readonly buffer LightBuffer {
     GpuAreaLight areaLights[8];
 } lights;
 
+struct GpuAtmosphereParameters {
+    vec4 planetAndScaleHeights;
+    vec4 coefficients;
+    vec4 betaRayleigh;
+    vec4 betaMie;
+    vec4 betaOzone;
+    vec4 ozoneParameters;
+    vec4 sunDiscParameters;
+    uvec4 controls;
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer AtmosphereBuffer {
+    GpuAtmosphereParameters parameters;
+} atmosphere;
+
 layout(push_constant) uniform PushConstants {
     vec4 sceneMin;
     vec4 sceneMax;
@@ -60,6 +75,9 @@ const float kRayEpsilon = 0.001;
 const float kChunkSize = 32.0;
 const vec3 kWorldUp = vec3(0.0, 1.0, 0.0);
 const float kInvPi = 0.31830988618;
+const float kEpsilon = 1e-6;
+const float kFarDistance = 1e20;
+const float kPi = 3.14159265359;
 
 const uint kMaterialAir = 0u;
 const uint kMaterialGrass = 1u;
@@ -139,6 +157,354 @@ vec3 sunColor()
 float sunIntensity()
 {
     return lights.sun.directionAndIntensity.w;
+}
+
+bool atmosphereEnabled()
+{
+    return atmosphere.parameters.controls.x != 0u;
+}
+
+int atmosphereViewSampleCount()
+{
+    return int(max(atmosphere.parameters.controls.y, 1u));
+}
+
+int atmosphereLightSampleCount()
+{
+    return int(max(atmosphere.parameters.controls.z, 1u));
+}
+
+float atmosphereEarthRadius()
+{
+    return max(atmosphere.parameters.planetAndScaleHeights.x, 1.0);
+}
+
+float atmosphereThickness()
+{
+    return max(atmosphere.parameters.planetAndScaleHeights.y, 1.0);
+}
+
+float atmosphereRayleighScale()
+{
+    return max(atmosphere.parameters.planetAndScaleHeights.z, 1.0);
+}
+
+float atmosphereMieScale()
+{
+    return max(atmosphere.parameters.planetAndScaleHeights.w, 1.0);
+}
+
+vec3 atmosphereEarthOrigin()
+{
+    return vec3(0.0, -atmosphereEarthRadius(), 0.0);
+}
+
+float atmosphereOuterRadius()
+{
+    return atmosphereEarthRadius() + atmosphereThickness();
+}
+
+float atmosphereRayleighCoefficient()
+{
+    return atmosphere.parameters.coefficients.x;
+}
+
+float atmosphereMieCoefficient()
+{
+    return atmosphere.parameters.coefficients.y;
+}
+
+float atmosphereOzoneCoefficient()
+{
+    return atmosphere.parameters.coefficients.z;
+}
+
+float atmosphereDensityScale()
+{
+    return atmosphere.parameters.coefficients.w;
+}
+
+vec3 atmosphereBetaRayleigh()
+{
+    return atmosphere.parameters.betaRayleigh.xyz;
+}
+
+vec3 atmosphereBetaMie()
+{
+    return atmosphere.parameters.betaMie.xyz;
+}
+
+vec3 atmosphereBetaOzone()
+{
+    return atmosphere.parameters.betaOzone.xyz;
+}
+
+float atmosphereOzoneCenterAltitude()
+{
+    return max(atmosphere.parameters.ozoneParameters.x, 0.0);
+}
+
+float atmosphereOzoneHalfWidth()
+{
+    return max(atmosphere.parameters.ozoneParameters.y, 1.0);
+}
+
+float atmosphereLightExposure()
+{
+    return max(atmosphere.parameters.ozoneParameters.z, 0.0);
+}
+
+float atmosphereMieGFactor()
+{
+    return clamp(atmosphere.parameters.ozoneParameters.w, 0.0, 0.9381);
+}
+
+float atmosphereSunDiscAngularSize()
+{
+    return max(atmosphere.parameters.sunDiscParameters.x, 0.0001);
+}
+
+float atmosphereSunDiscSoftness()
+{
+    return max(atmosphere.parameters.sunDiscParameters.y, 0.0);
+}
+
+float atmosphereSunDiscBrightness()
+{
+    return max(atmosphere.parameters.sunDiscParameters.z, 0.0);
+}
+
+vec2 intersectSphere(vec3 origin, vec3 direction, vec3 center, float radius)
+{
+    origin -= center;
+    float termA = dot(direction, direction);
+    float termB = 2.0 * dot(origin, direction);
+    float termC = dot(origin, origin) - radius * radius;
+    float discriminant = termB * termB - 4.0 * termA * termC;
+    if (discriminant < 0.0) {
+        return vec2(-1.0);
+    }
+
+    float rootDiscriminant = sqrt(discriminant);
+    return vec2(-termB - rootDiscriminant, -termB + rootDiscriminant) / (2.0 * termA);
+}
+
+float nearestPositiveIntersection(vec2 intersections)
+{
+    if (intersections.x > kEpsilon) {
+        return intersections.x;
+    }
+    if (intersections.y > kEpsilon) {
+        return intersections.y;
+    }
+
+    return -1.0;
+}
+
+vec2 intersectAtmosphereShell(vec3 origin, vec3 direction)
+{
+    return intersectSphere(origin, direction, atmosphereEarthOrigin(), atmosphereOuterRadius());
+}
+
+vec2 intersectPlanet(vec3 origin, vec3 direction)
+{
+    return intersectSphere(origin, direction, atmosphereEarthOrigin(), atmosphereEarthRadius());
+}
+
+bool atmosphereSegmentBounds(vec3 origin, vec3 direction, float maxDistance, out float segmentStart, out float segmentEnd)
+{
+    segmentStart = 0.0;
+    segmentEnd = maxDistance;
+
+    vec2 shellBounds = intersectAtmosphereShell(origin, direction);
+    if (shellBounds.x < 0.0 && shellBounds.y < 0.0) {
+        return false;
+    }
+
+    if (shellBounds.x > 0.0) {
+        segmentStart = max(segmentStart, shellBounds.x);
+    }
+    if (shellBounds.y > 0.0) {
+        segmentEnd = min(segmentEnd, shellBounds.y);
+    }
+
+    float planetDistance = nearestPositiveIntersection(intersectPlanet(origin, direction));
+    if (planetDistance > 0.0) {
+        segmentEnd = min(segmentEnd, planetDistance);
+    }
+
+    return segmentEnd > segmentStart + kEpsilon;
+}
+
+float atmosphereAltitude(vec3 worldPosition)
+{
+    return distance(worldPosition, atmosphereEarthOrigin()) - atmosphereEarthRadius();
+}
+
+float rayleighDensity(float altitude)
+{
+    return exp(-max(0.0, altitude) / atmosphereRayleighScale());
+}
+
+float mieDensity(float altitude)
+{
+    return exp(-max(0.0, altitude) / atmosphereMieScale());
+}
+
+float ozoneDensity(float altitude)
+{
+    return max(
+        0.0,
+        1.0 - abs(altitude - atmosphereOzoneCenterAltitude()) / atmosphereOzoneHalfWidth());
+}
+
+vec3 atmosphereDensities(float altitude)
+{
+    return vec3(rayleighDensity(altitude), mieDensity(altitude), ozoneDensity(altitude));
+}
+
+float scatteringPhaseRayleigh(float mu)
+{
+    return 3.0 * (1.0 + mu * mu) / (16.0 * kPi);
+}
+
+float scatteringPhaseMie(float mu, float gFactor)
+{
+    float clampedG = min(gFactor, 0.9381);
+    float k = 1.55 * clampedG - 0.55 * clampedG * clampedG * clampedG;
+    float kMu = k * mu;
+    return (1.0 - k * k) / ((4.0 * kPi) * (1.0 - kMu) * (1.0 - kMu));
+}
+
+vec3 computeAtmosphereExtinction(vec3 opticalDepth)
+{
+    return exp(-(
+        opticalDepth.x * atmosphereBetaRayleigh() * atmosphereRayleighCoefficient() +
+        opticalDepth.y * atmosphereBetaMie() * atmosphereMieCoefficient() * 1.1 +
+        opticalDepth.z * atmosphereBetaOzone() * atmosphereOzoneCoefficient()) *
+        atmosphereDensityScale());
+}
+
+bool sunOccludedByPlanet(vec3 origin)
+{
+    return nearestPositiveIntersection(intersectPlanet(origin, sunDirection())) > 0.0;
+}
+
+vec3 calculateAtmosphereOpticalDepth(vec3 origin, vec3 direction)
+{
+    float segmentStart = 0.0;
+    float segmentEnd = 0.0;
+    if (!atmosphereSegmentBounds(origin, direction, kFarDistance, segmentStart, segmentEnd)) {
+        return vec3(0.0);
+    }
+
+    int stepCount = atmosphereLightSampleCount();
+    float stepLength = (segmentEnd - segmentStart) / float(stepCount);
+    vec3 opticalDepth = vec3(0.0);
+
+    for (int stepIndex = 0; stepIndex < stepCount; ++stepIndex) {
+        float sampleDistance = segmentStart + (float(stepIndex) + 0.5) * stepLength;
+        vec3 samplePosition = origin + direction * sampleDistance;
+        opticalDepth += atmosphereDensities(atmosphereAltitude(samplePosition)) * stepLength;
+    }
+
+    return opticalDepth;
+}
+
+vec3 computeAtmosphereTransmittance(vec3 origin, vec3 direction)
+{
+    if (!atmosphereEnabled()) {
+        return vec3(1.0);
+    }
+
+    if (sunOccludedByPlanet(origin) && dot(direction, sunDirection()) > 0.9999) {
+        return vec3(0.0);
+    }
+
+    return computeAtmosphereExtinction(calculateAtmosphereOpticalDepth(origin, direction));
+}
+
+vec3 marchAtmosphereScattering(
+    vec3 origin,
+    vec3 direction,
+    float marchDistance,
+    vec3 lightTint,
+    out vec3 totalTransmittance)
+{
+    totalTransmittance = vec3(1.0);
+    if (!atmosphereEnabled()) {
+        return vec3(0.0);
+    }
+
+    float segmentStart = 0.0;
+    float segmentEnd = 0.0;
+    if (!atmosphereSegmentBounds(origin, direction, marchDistance, segmentStart, segmentEnd)) {
+        return vec3(0.0);
+    }
+
+    vec3 marchOrigin = origin + direction * segmentStart;
+    float effectiveDistance = segmentEnd - segmentStart;
+    float viewAltitude = atmosphereAltitude(marchOrigin);
+    float stepDistribution =
+        1.0 + clamp(1.0 - viewAltitude / atmosphereThickness(), 0.0, 1.0) * 8.0;
+    float phaseAngle = dot(direction, sunDirection());
+    float rayleighPhase = scatteringPhaseRayleigh(phaseAngle);
+    float miePhase = scatteringPhaseMie(phaseAngle, atmosphereMieGFactor());
+    int stepCount = atmosphereViewSampleCount();
+
+    vec3 accumulatedDepth = vec3(0.0);
+    vec3 rayleighScatter = vec3(0.0);
+    vec3 mieScatter = vec3(0.0);
+    float lastDistance = 0.0;
+
+    for (int stepIndex = 0; stepIndex < stepCount; ++stepIndex) {
+        float segmentFraction = float(stepIndex + 1) / float(stepCount);
+        float currentDistance = pow(segmentFraction, stepDistribution) * effectiveDistance;
+        float deltaDistance = currentDistance - lastDistance;
+        float sampleDistance = 0.5 * (lastDistance + currentDistance);
+        vec3 samplePosition = marchOrigin + direction * sampleDistance;
+        vec3 sampleDensity = atmosphereDensities(atmosphereAltitude(samplePosition));
+
+        accumulatedDepth += sampleDensity * deltaDistance;
+        vec3 viewExtinction = computeAtmosphereExtinction(accumulatedDepth);
+
+        vec3 lightExtinction = vec3(0.0);
+        if (!sunOccludedByPlanet(samplePosition)) {
+            lightExtinction = computeAtmosphereExtinction(
+                calculateAtmosphereOpticalDepth(samplePosition, sunDirection()));
+        }
+
+        rayleighScatter +=
+            viewExtinction * lightExtinction * rayleighPhase * sampleDensity.x * deltaDistance;
+        mieScatter += viewExtinction * lightExtinction * miePhase * sampleDensity.y * deltaDistance;
+        lastDistance = currentDistance;
+    }
+
+    totalTransmittance = computeAtmosphereExtinction(accumulatedDepth);
+    return (
+        rayleighScatter * atmosphereBetaRayleigh() * atmosphereRayleighCoefficient() +
+        mieScatter * atmosphereBetaMie() * atmosphereMieCoefficient()) *
+        lightTint * atmosphereLightExposure();
+}
+
+float renderSunDiscMask(vec3 viewDirection, vec3 sunDirectionValue, float angularSize)
+{
+    float angleDot = dot(viewDirection, sunDirectionValue);
+    float innerEdge = cos(angularSize * (1.0 - atmosphereSunDiscSoftness()));
+    float outerEdge = cos(angularSize * (1.0 + atmosphereSunDiscSoftness()));
+    return smoothstep(outerEdge, innerEdge, angleDot);
+}
+
+vec3 renderAtmosphereSunDisc(vec3 origin, vec3 viewDirection)
+{
+    if (!atmosphereEnabled()) {
+        return vec3(0.0);
+    }
+
+    vec3 transmittance = vec3(1.0);
+    marchAtmosphereScattering(origin, viewDirection, kFarDistance, sunColor() * sunIntensity(), transmittance);
+    float sunMask = renderSunDiscMask(viewDirection, sunDirection(), atmosphereSunDiscAngularSize());
+    return sunColor() * sunIntensity() * transmittance * sunMask * atmosphereSunDiscBrightness();
 }
 
 vec3 skyBaseColor(vec3 direction)
@@ -540,7 +906,18 @@ vec3 evaluateSunLight(Hit hit)
         return vec3(0.0);
     }
 
-    return sunColor() * sunIntensity() * ndotl;
+    vec3 transmittance = vec3(1.0);
+    if (atmosphereEnabled()) {
+        vec3 origin = hit.position + hit.normal * kRayEpsilon;
+        if (sunOccludedByPlanet(origin)) {
+            return vec3(0.0);
+        }
+
+        transmittance = computeAtmosphereExtinction(
+            calculateAtmosphereOpticalDepth(origin, sunDirection()));
+    }
+
+    return sunColor() * sunIntensity() * transmittance * ndotl;
 }
 
 vec3 evaluatePointLight(Hit hit, GpuPointLight light)
@@ -640,10 +1017,27 @@ vec3 tracePath(Ray ray, inout uint rngState)
 
     for (uint bounce = 0u; bounce < max(pc.settings.z, 1u); ++bounce) {
         Hit hit;
-        if (!sceneIntersect(ray, hit)) {
-            radiance += throughput * skyBaseColor(ray.direction);
-            if (bounce == 0u) {
-                radiance += throughput * sunDiscColor(ray.direction);
+        const bool hasHit = sceneIntersect(ray, hit);
+        const bool marchViewAtmosphere = atmosphereEnabled() && (bounce == 0u || !hasHit);
+        if (marchViewAtmosphere) {
+            vec3 segmentTransmittance = vec3(1.0);
+            radiance += throughput * marchAtmosphereScattering(
+                ray.origin,
+                ray.direction,
+                hasHit ? hit.t : kFarDistance,
+                sunColor() * sunIntensity(),
+                segmentTransmittance);
+            throughput *= segmentTransmittance;
+        }
+
+        if (!hasHit) {
+            if (atmosphereEnabled()) {
+                radiance += throughput * renderAtmosphereSunDisc(ray.origin, ray.direction);
+            } else {
+                radiance += throughput * skyBaseColor(ray.direction);
+                if (bounce == 0u) {
+                    radiance += throughput * sunDiscColor(ray.direction);
+                }
             }
             break;
         }

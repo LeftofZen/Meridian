@@ -64,6 +64,17 @@ private:
         std::array<GpuAreaLight, kMaxAreaLights> areaLights{};
     };
 
+    struct alignas(16) GpuAtmosphereParameters {
+        std::array<float, 4> planetAndScaleHeights{};
+        std::array<float, 4> coefficients{};
+        std::array<float, 4> betaRayleigh{};
+        std::array<float, 4> betaMie{};
+        std::array<float, 4> betaOzone{};
+        std::array<float, 4> ozoneParameters{};
+        std::array<float, 4> sunDiscParameters{};
+        std::array<std::uint32_t, 4> controls{};
+    };
+
     struct alignas(16) GpuChunkRecord {
         std::int32_t coordX{0};
         std::int32_t coordY{0};
@@ -131,6 +142,7 @@ private:
         GpuBuffer octreeBuffer;
         GpuBuffer chunkLookupBuffer;
         GpuBuffer lightBuffer;
+        GpuBuffer atmosphereBuffer;
         GpuImage traceColor;
         GpuImage traceGuide;
         GpuImage historyColor;
@@ -165,6 +177,7 @@ private:
     [[nodiscard]] bool createFilterPipeline();
     [[nodiscard]] bool createDenoisePipeline();
     [[nodiscard]] bool uploadSceneData(FrameResources& frameResources);
+    [[nodiscard]] bool updateAtmosphereData(FrameResources& frameResources);
     [[nodiscard]] bool ensureBufferCapacity(GpuBuffer& buffer, VkDeviceSize sizeInBytes);
     [[nodiscard]] bool createBuffer(
         VkDeviceSize sizeInBytes,

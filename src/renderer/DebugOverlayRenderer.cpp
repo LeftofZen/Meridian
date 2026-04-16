@@ -283,6 +283,200 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         }
 
         ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Button(
+                    m_pathTracerSettings->atmosphereEnabled
+                        ? "Atmosphere: On"
+                        : "Atmosphere: Off")) {
+                m_pathTracerSettings->atmosphereEnabled = !m_pathTracerSettings->atmosphereEnabled;
+                m_pathTracerSettings->clamp();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Single scattering on sky and primary aerial perspective");
+
+            int atmosphereViewSampleCount = m_pathTracerSettings->atmosphereViewSampleCount;
+            if (ImGui::SliderInt("Atmosphere View Steps", &atmosphereViewSampleCount, 4, 64)) {
+                m_pathTracerSettings->atmosphereViewSampleCount = atmosphereViewSampleCount;
+                m_pathTracerSettings->clamp();
+            }
+
+            int atmosphereLightSampleCount = m_pathTracerSettings->atmosphereLightSampleCount;
+            if (ImGui::SliderInt("Atmosphere Light Steps", &atmosphereLightSampleCount, 1, 16)) {
+                m_pathTracerSettings->atmosphereLightSampleCount = atmosphereLightSampleCount;
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Earth Radius (m)",
+                    &m_pathTracerSettings->atmosphereEarthRadiusMeters,
+                    100000.0F,
+                    10000000.0F,
+                    "%.0f",
+                    ImGuiSliderFlags_Logarithmic)) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Atmosphere Thickness (m)",
+                    &m_pathTracerSettings->atmosphereThicknessMeters,
+                    1000.0F,
+                    200000.0F,
+                    "%.0f",
+                    ImGuiSliderFlags_Logarithmic)) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Rayleigh Scale (m)",
+                    &m_pathTracerSettings->atmosphereRayleighScaleMeters,
+                    100.0F,
+                    100000.0F,
+                    "%.0f",
+                    ImGuiSliderFlags_Logarithmic)) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Mie Scale (m)",
+                    &m_pathTracerSettings->atmosphereMieScaleMeters,
+                    100.0F,
+                    20000.0F,
+                    "%.0f",
+                    ImGuiSliderFlags_Logarithmic)) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Rayleigh Coefficient",
+                    &m_pathTracerSettings->atmosphereRayleighCoefficient,
+                    0.0F,
+                    8.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Mie Coefficient",
+                    &m_pathTracerSettings->atmosphereMieCoefficient,
+                    0.0F,
+                    8.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Ozone Coefficient",
+                    &m_pathTracerSettings->atmosphereOzoneCoefficient,
+                    0.0F,
+                    8.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::DragFloat3(
+                    "Rayleigh Beta",
+                    m_pathTracerSettings->atmosphereBetaRayleigh.data(),
+                    1.0e-7F,
+                    0.0F,
+                    0.0001F,
+                    "%.7f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::DragFloat3(
+                    "Mie Beta",
+                    m_pathTracerSettings->atmosphereBetaMie.data(),
+                    1.0e-7F,
+                    0.0F,
+                    0.0001F,
+                    "%.7f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::DragFloat3(
+                    "Ozone Beta",
+                    m_pathTracerSettings->atmosphereBetaOzone.data(),
+                    1.0e-7F,
+                    0.0F,
+                    0.0001F,
+                    "%.7f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Density Scale",
+                    &m_pathTracerSettings->atmosphereDensityScale,
+                    0.0F,
+                    8.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Light Exposure",
+                    &m_pathTracerSettings->atmosphereLightExposure,
+                    0.0F,
+                    64.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Mie Anisotropy",
+                    &m_pathTracerSettings->atmosphereMieAnisotropy,
+                    0.0F,
+                    0.9381F,
+                    "%.3f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Ozone Center Altitude (m)",
+                    &m_pathTracerSettings->atmosphereOzoneCenterAltitudeMeters,
+                    0.0F,
+                    60000.0F,
+                    "%.0f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Ozone Half Width (m)",
+                    &m_pathTracerSettings->atmosphereOzoneHalfWidthMeters,
+                    1000.0F,
+                    30000.0F,
+                    "%.0f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Sun Disc Angular Size",
+                    &m_pathTracerSettings->atmosphereSunDiscAngularSize,
+                    0.001F,
+                    0.2F,
+                    "%.4f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Sun Disc Softness",
+                    &m_pathTracerSettings->atmosphereSunDiscSoftness,
+                    0.0F,
+                    1.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+
+            if (ImGui::SliderFloat(
+                    "Sun Disc Brightness",
+                    &m_pathTracerSettings->atmosphereSunDiscBrightness,
+                    0.0F,
+                    64.0F,
+                    "%.2f")) {
+                m_pathTracerSettings->clamp();
+            }
+        }
+
+        ImGui::Spacing();
         ImGui::TextUnformatted("Camera Controls");
         ImGui::TextUnformatted("Move: W A S D");
         ImGui::TextUnformatted("Vertical: Space / Left Ctrl");
