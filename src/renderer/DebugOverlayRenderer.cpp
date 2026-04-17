@@ -121,6 +121,11 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         m_renderStateSnapshot.timing.renderDeltaMilliseconds,
         m_renderStateSnapshot.timing.framesPerSecond);
     ImGui::Text("Render CPU: %.3f ms", m_renderStateSnapshot.timing.renderCpuMilliseconds);
+    const VkExtent2D renderTargetExtent = m_context->getSwapchainExtent();
+    ImGui::Text(
+        "Render target: %u x %u",
+        renderTargetExtent.width,
+        renderTargetExtent.height);
     ImGui::Text(
         "Camera: (%.1f, %.1f, %.1f)",
         m_renderStateSnapshot.camera.position[0],
