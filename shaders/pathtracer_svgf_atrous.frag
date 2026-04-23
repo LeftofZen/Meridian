@@ -81,16 +81,12 @@ ivec2 clampedCoord(ivec2 pixelCoord, ivec2 extent)
 
 vec4 sampleColor(ivec2 pixelCoord, ivec2 extent)
 {
-    ivec2 coord = clampedCoord(pixelCoord, extent);
-    vec2 uv = (vec2(coord) + 0.5) / vec2(extent);
-    return texture(sourceInput, uv);
+    return texelFetch(sourceInput, clampedCoord(pixelCoord, extent), 0);
 }
 
 vec4 sampleGuide(ivec2 pixelCoord, ivec2 extent)
 {
-    ivec2 coord = clampedCoord(pixelCoord, extent);
-    vec2 uv = (vec2(coord) + 0.5) / vec2(extent);
-    return texture(guideInput, uv);
+    return texelFetch(guideInput, clampedCoord(pixelCoord, extent), 0);
 }
 
 float localVariance(ivec2 pixelCoord, ivec2 extent)
@@ -116,10 +112,13 @@ void main()
 {
     ivec2 extent = textureSize(sourceInput, 0);
     ivec2 pixelCoord = ivec2(gl_FragCoord.xy);
-    vec4 centerSample = texture(sourceInput, inUv);
+    vec4 centerSample = sampleColor(pixelCoord, extent);
     vec4 centerGuide = sampleGuide(pixelCoord, extent);
     float centerDepth = centerGuide.w;
-    float centerVariance = localVariance(pixelCoord, extent) / max(centerSample.a, 1.0);
+    bool isFirstAtrousPass = pc.filterParameters0.x <= 1.0;
+    float centerVariance = isFirstAtrousPass
+        ? localVariance(pixelCoord, extent) / max(centerSample.a, 1.0)
+        : max(centerSample.a, 0.0);
     float colorPhi = max(pc.filterParameters0.y * sqrt(centerVariance + 0.0001), 0.0001);
 
     vec3 accumulatedColor = vec3(0.0);
@@ -151,5 +150,5 @@ void main()
     }
 
     vec3 filteredColor = accumulatedColor / max(accumulatedWeight, 0.0001);
-    outColor = vec4(filteredColor, centerSample.a);
+    outColor = vec4(filteredColor, centerVariance);
 }

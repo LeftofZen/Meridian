@@ -127,11 +127,12 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
     const float radius = sqrt(u1);
     const float theta = 6.28318530718 * u2;
 
-    const vec3 tangent =
-        abs(normal.y) > 0.5
-            ? vec3(1.0, 0.0, 0.0)
-            : vec3(0.0, 1.0, 0.0);
-    const vec3 bitangent = cross(normal, tangent);
+    const vec3 tangent = normalize(cross(
+        abs(normal.y) > 0.999
+            ? vec3(0.0, 0.0, 1.0)
+            : vec3(0.0, 1.0, 0.0),
+        normal));
+    const vec3 bitangent = normalize(cross(normal, tangent));
 
     const vec3 localDirection = vec3(
         radius * cos(theta),
@@ -142,6 +143,24 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
         tangent * localDirection.x +
         normal * localDirection.y +
         bitangent * localDirection.z;
+}
+
+float directLightingSampleProbability(uint bounce)
+{
+    if (bounce == 0u) {
+        return 1.0;
+    }
+
+    if (bounce == 1u) {
+        return 0.5;
+    }
+
+    return 0.25;
+}
+
+vec3 lambertianBrdf(vec3 albedo)
+{
+    return albedo * kInvPi;
 }
 
 vec3 sunDirection()
@@ -495,14 +514,12 @@ float renderSunDiscMask(vec3 viewDirection, vec3 sunDirectionValue, float angula
     return smoothstep(outerEdge, innerEdge, angleDot);
 }
 
-vec3 renderAtmosphereSunDisc(vec3 origin, vec3 viewDirection)
+vec3 renderAtmosphereSunDisc(vec3 viewDirection, vec3 transmittance)
 {
     if (!atmosphereEnabled()) {
         return vec3(0.0);
     }
 
-    vec3 transmittance = vec3(1.0);
-    marchAtmosphereScattering(origin, viewDirection, kFarDistance, sunColor() * sunIntensity(), transmittance);
     float sunMask = renderSunDiscMask(viewDirection, sunDirection(), atmosphereSunDiscAngularSize());
     return sunColor() * sunIntensity() * transmittance * sunMask * atmosphereSunDiscBrightness();
 }
@@ -851,31 +868,16 @@ bool sceneIntersect(Ray ray, out Hit hit)
             }
         }
 
-        if (tMax.x < tMax.y) {
-            if (tMax.x < tMax.z) {
-                chunkCoord.x += stepDir.x;
-                currentT = tMax.x;
-                tMax.x += tDelta.x;
-                currentNormal = vec3(float(-stepDir.x), 0.0, 0.0);
-            } else {
-                chunkCoord.z += stepDir.z;
-                currentT = tMax.z;
-                tMax.z += tDelta.z;
-                currentNormal = vec3(0.0, 0.0, float(-stepDir.z));
-            }
-        } else {
-            if (tMax.y < tMax.z) {
-                chunkCoord.y += stepDir.y;
-                currentT = tMax.y;
-                tMax.y += tDelta.y;
-                currentNormal = vec3(0.0, float(-stepDir.y), 0.0);
-            } else {
-                chunkCoord.z += stepDir.z;
-                currentT = tMax.z;
-                tMax.z += tDelta.z;
-                currentNormal = vec3(0.0, 0.0, float(-stepDir.z));
-            }
-        }
+        // Preserve the previous tie-break behavior while avoiding control-flow branches.
+        const vec3 stepMask = vec3(
+            bvec3(
+                tMax.x < tMax.y && tMax.x < tMax.z,
+                tMax.y <= tMax.x && tMax.y < tMax.z,
+                tMax.z <= tMax.x && tMax.z <= tMax.y));
+        currentT = dot(tMax, stepMask);
+        tMax += stepMask * tDelta;
+        chunkCoord += ivec3(stepMask) * stepDir;
+        currentNormal = -vec3(stepDir) * stepMask;
     }
 
     return false;
@@ -998,29 +1000,41 @@ vec3 evaluateDirectLighting(Hit hit, inout uint rngState)
     vec3 directLighting = evaluateSunLight(hit);
 
     const uint pointLightCount = min(lights.counts.x, 8u);
-    for (uint lightIndex = 0u; lightIndex < pointLightCount; ++lightIndex) {
-        directLighting += evaluatePointLight(hit, lights.pointLights[lightIndex]);
+    if (pointLightCount > 0u) {
+        const uint lightIndex = min(uint(randomFloat(rngState) * float(pointLightCount)), pointLightCount - 1u);
+        directLighting +=
+            evaluatePointLight(hit, lights.pointLights[lightIndex]) * float(pointLightCount);
     }
 
     const uint areaLightCount = min(lights.counts.y, 8u);
-    for (uint lightIndex = 0u; lightIndex < areaLightCount; ++lightIndex) {
-        directLighting += evaluateAreaLight(hit, lights.areaLights[lightIndex], rngState);
+    if (areaLightCount > 0u) {
+        const uint lightIndex = min(uint(randomFloat(rngState) * float(areaLightCount)), areaLightCount - 1u);
+        directLighting +=
+            evaluateAreaLight(hit, lights.areaLights[lightIndex], rngState) * float(areaLightCount);
     }
 
     return directLighting;
 }
 
-vec3 tracePath(Ray ray, inout uint rngState)
+vec3 tracePath(Ray ray, inout uint rngState, out vec4 primaryGuide)
 {
     vec3 radiance = vec3(0.0);
     vec3 throughput = vec3(1.0);
+    bool primaryGuideWritten = false;
 
     for (uint bounce = 0u; bounce < max(pc.settings.z, 1u); ++bounce) {
         Hit hit;
         const bool hasHit = sceneIntersect(ray, hit);
+        if (!primaryGuideWritten) {
+            primaryGuide = hasHit
+                ? vec4(hit.normal * 0.5 + 0.5, hit.t)
+                : vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
+            primaryGuideWritten = true;
+        }
+
         const bool marchViewAtmosphere = atmosphereEnabled() && (bounce == 0u || !hasHit);
+        vec3 segmentTransmittance = vec3(1.0);
         if (marchViewAtmosphere) {
-            vec3 segmentTransmittance = vec3(1.0);
             radiance += throughput * marchAtmosphereScattering(
                 ray.origin,
                 ray.direction,
@@ -1032,7 +1046,7 @@ vec3 tracePath(Ray ray, inout uint rngState)
 
         if (!hasHit) {
             if (atmosphereEnabled()) {
-                radiance += throughput * renderAtmosphereSunDisc(ray.origin, ray.direction);
+                radiance += throughput * renderAtmosphereSunDisc(ray.direction, segmentTransmittance);
             } else {
                 radiance += throughput * skyBaseColor(ray.direction);
                 if (bounce == 0u) {
@@ -1042,7 +1056,15 @@ vec3 tracePath(Ray ray, inout uint rngState)
             break;
         }
 
-        radiance += throughput * hit.albedo * evaluateDirectLighting(hit, rngState) * kInvPi;
+        const float directLightingProbability = directLightingSampleProbability(bounce);
+        if (randomFloat(rngState) <= directLightingProbability) {
+            radiance +=
+                throughput *
+                lambertianBrdf(hit.albedo) *
+                evaluateDirectLighting(hit, rngState) /
+                directLightingProbability;
+        }
+
         throughput *= hit.albedo;
         if (max(throughput.r, max(throughput.g, throughput.b)) < 0.02) {
             break;
@@ -1060,33 +1082,6 @@ float luminance(vec3 color)
     return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
 
-vec4 primarySurfaceGuide(
-    vec2 pixel,
-    vec3 forward,
-    vec3 right,
-    vec3 up,
-    float aspectRatio,
-    float tanHalfFov)
-{
-    vec2 ndc = (pixel / pc.frameData.xy) * 2.0 - 1.0;
-    ndc.x *= aspectRatio;
-    ndc.y = -ndc.y;
-
-    Ray ray;
-    ray.origin = pc.cameraPosition.xyz;
-    ray.direction = normalize(
-        forward +
-        right * (ndc.x * tanHalfFov) +
-        up * (ndc.y * tanHalfFov));
-
-    Hit hit;
-    if (sceneIntersect(ray, hit)) {
-        return vec4(hit.normal * 0.5 + 0.5, hit.t);
-    }
-
-    return vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
-}
-
 void main()
 {
     const vec2 pixel = gl_FragCoord.xy;
@@ -1102,20 +1097,14 @@ void main()
     const float aspectRatio = max(pc.frameData.w, 0.01);
     const float tanHalfFov = tan(radians(max(pc.frameData.z, 1.0)) * 0.5);
 
-    outGuide = primarySurfaceGuide(
-        pixel,
-        forward,
-        right,
-        up,
-        aspectRatio,
-        tanHalfFov);
-
     vec3 color = vec3(0.0);
     float luminanceSum = 0.0;
     float luminanceSquaredSum = 0.0;
     const uint sampleCount = max(pc.settings.y, 1u);
     for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
-        const vec2 jitter = vec2(randomFloat(rngState), randomFloat(rngState));
+        const vec2 jitter = sampleIndex == 0u
+            ? vec2(0.0)
+            : vec2(randomFloat(rngState), randomFloat(rngState));
         vec2 ndc = ((pixel + jitter) / pc.frameData.xy) * 2.0 - 1.0;
         ndc.x *= aspectRatio;
         ndc.y = -ndc.y;
@@ -1127,7 +1116,12 @@ void main()
             right * (ndc.x * tanHalfFov) +
             up * (ndc.y * tanHalfFov));
 
-        const vec3 sampleRadiance = tracePath(ray, rngState);
+        vec4 sampleGuide = vec4(0.0);
+        const vec3 sampleRadiance = tracePath(ray, rngState, sampleGuide);
+        if (sampleIndex == 0u) {
+            outGuide = sampleGuide;
+        }
+
         color += sampleRadiance;
 
         const float sampleLuminance = luminance(sampleRadiance);

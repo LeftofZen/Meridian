@@ -90,13 +90,54 @@ endforeach()
 add_custom_target(MeridianShaders ALL DEPENDS ${MERIDIAN_SHADER_OUTPUTS})
 add_dependencies(Meridian MeridianShaders)
 
-find_package(imgui CONFIG REQUIRED)
+set(MERIDIAN_VCPKG_ROOT "$ENV{VCPKG_ROOT}")
+if (NOT MERIDIAN_VCPKG_ROOT)
+    set(MERIDIAN_VCPKG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg")
+endif()
 
-add_library(MeridianImGui INTERFACE)
-target_link_libraries(MeridianImGui INTERFACE imgui::imgui)
-target_compile_definitions(MeridianImGui INTERFACE
-    IMGUI_IMPL_VULKAN_NO_PROTOTYPES=1
-    VK_NO_PROTOTYPES=1)
+file(GLOB MERIDIAN_IMGUI_SOURCE_DIRS LIST_DIRECTORIES true
+    "${MERIDIAN_VCPKG_ROOT}/buildtrees/imgui/src/*.clean")
+if (NOT MERIDIAN_IMGUI_SOURCE_DIRS)
+    file(GLOB MERIDIAN_IMGUI_SOURCE_DIRS LIST_DIRECTORIES true
+        "${MERIDIAN_VCPKG_ROOT}/buildtrees/imgui/src/*")
+endif()
+
+if (NOT MERIDIAN_IMGUI_SOURCE_DIRS)
+    message(FATAL_ERROR
+        "Unable to locate Dear ImGui sources under ${MERIDIAN_VCPKG_ROOT}/buildtrees/imgui/src. "
+        "Ensure VCPKG_ROOT points at the local vcpkg checkout used for this workspace.")
+endif()
+
+list(SORT MERIDIAN_IMGUI_SOURCE_DIRS)
+list(GET MERIDIAN_IMGUI_SOURCE_DIRS -1 MERIDIAN_IMGUI_SOURCE_DIR)
+
+add_library(MeridianImGui STATIC
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/imgui.cpp"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/imgui_draw.cpp"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/imgui_tables.cpp"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/imgui_widgets.cpp"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp"
+)
+target_include_directories(MeridianImGui PUBLIC
+    "${MERIDIAN_IMGUI_SOURCE_DIR}"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/backends"
+    "${MERIDIAN_IMGUI_SOURCE_DIR}/misc/cpp"
+)
+target_compile_definitions(MeridianImGui PRIVATE
+    IMGUI_IMPL_VULKAN_USE_VOLK=1
+)
+target_compile_options(MeridianImGui PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/UIMGUI_IMPL_VULKAN_NO_PROTOTYPES>
+    $<$<CXX_COMPILER_ID:MSVC>:/UVK_NO_PROTOTYPES>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UIMGUI_IMPL_VULKAN_NO_PROTOTYPES>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UVK_NO_PROTOTYPES>
+)
+target_link_libraries(MeridianImGui PRIVATE
+    SDL3::SDL3
+    volk::volk
+)
 
 target_sources(Meridian PRIVATE
     src/main.cpp
@@ -128,9 +169,20 @@ target_include_directories(Meridian PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_compile_definitions(Meridian PRIVATE
+    IMGUI_IMPL_VULKAN_USE_VOLK=1
+)
+target_compile_options(Meridian PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/UIMGUI_IMPL_VULKAN_NO_PROTOTYPES>
+    $<$<CXX_COMPILER_ID:MSVC>:/UVK_NO_PROTOTYPES>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UIMGUI_IMPL_VULKAN_NO_PROTOTYPES>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UVK_NO_PROTOTYPES>
+)
+
 target_link_libraries(Meridian PRIVATE
     SDL3::SDL3
     SDL3_image::SDL3_image
+    MeridianImGui
     volk::volk
     Jolt::Jolt
     EnTT::EnTT
@@ -148,7 +200,6 @@ target_link_libraries(Meridian PRIVATE
     RecastNavigation::Recast
     RecastNavigation::Detour
     Taskflow::Taskflow
-    MeridianImGui
 )
 
 if (WIN32)
