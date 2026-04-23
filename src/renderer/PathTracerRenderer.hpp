@@ -160,7 +160,6 @@ private:
         std::array<float, 3> sceneMax{1.0F, 1.0F, 1.0F};
         std::array<std::int32_t, 3> chunkGridOrigin{0, 0, 0};
         std::array<std::uint32_t, 3> chunkGridSize{1, 1, 1};
-        std::array<std::int32_t, 3> cameraChunkCoord{0, 0, 0};
         std::uint32_t chunkResolution{32};
         std::uint64_t renderSettingsRevision{~0ULL};
         CameraRenderState cameraState{};
