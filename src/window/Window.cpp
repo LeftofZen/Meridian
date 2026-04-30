@@ -4,7 +4,6 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_filesystem.h>
-#include <SDL3_image/SDL_image.h>
 
 #include <filesystem>
 
@@ -23,10 +22,10 @@ void SetWindowIcon(SDL_Window* window)
     const std::filesystem::path iconPath = std::filesystem::path(basePath) / kWindowIconFileName;
     SDL_free(const_cast<char*>(basePath));
 
-    SDL_Surface* iconSurface = IMG_Load(iconPath.string().c_str());
+    SDL_Surface* iconSurface = SDL_LoadPNG(iconPath.string().c_str());
 
     if (iconSurface == nullptr) {
-        MRD_WARN("Failed to load window icon '{}': {}", iconPath.string(), IMG_GetError());
+        MRD_WARN("Failed to load window icon '{}': {}", iconPath.string(), SDL_GetError());
         return;
     }
 

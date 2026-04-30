@@ -155,10 +155,10 @@ void PathTracerRenderer::beginFrame()
         previousFrameResources.worldRevision == m_renderStateSnapshot.world.revision &&
         previousFrameResources.lightingRevision == m_renderStateSnapshot.lighting.revision &&
         previousFrameResources.renderSettingsRevision == m_renderStateSnapshot.worldRenderSettings.revision;
-    const GpuImage& historySourceImage = previousFrameSlot != m_currentFrameSlot
+    const GpuImage& historySourceImage = historyValid
         ? previousFrameResources.historyColor
-        : frameResources.filterPing;
-    const GpuImage& historySourceGuide = previousFrameSlot != m_currentFrameSlot
+        : frameResources.traceColor;
+    const GpuImage& historySourceGuide = historyValid
         ? previousFrameResources.traceGuide
         : frameResources.traceGuide;
 
@@ -1213,10 +1213,13 @@ bool PathTracerRenderer::createPipeline()
     colorBlending.attachmentCount = static_cast<std::uint32_t>(colorBlendAttachments.size());
     colorBlending.pAttachments = colorBlendAttachments.data();
 
-    const std::array<VkDynamicState, 2> dynamicStates{
+    std::vector<VkDynamicState> dynamicStates{
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
     };
+    if (m_context->supportsFragmentShadingRate()) {
+        dynamicStates.push_back(VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
+    }
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
