@@ -321,6 +321,10 @@ bool Engine::init()
                 m_world->requestTerrainSettings(terrainSettings);
             }
         });
+    m_debugOverlay->setTerrainHeightmapTilesCallback([this]() {
+        return m_world ? m_world->terrainHeightmapTiles() :
+                         std::vector<std::shared_ptr<const TerrainHeightmapTile>>{};
+    });
     MRD_INFO("[OK] World");
 
     MRD_INFO("=== All systems operational ===");

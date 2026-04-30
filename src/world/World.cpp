@@ -169,6 +169,12 @@ TerrainHeightmapSettings World::terrainSettings() const
     return m_snapshot.terrainSettings;
 }
 
+std::vector<std::shared_ptr<const TerrainHeightmapTile>> World::terrainHeightmapTiles() const
+{
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.terrainHeightmapTiles;
+}
+
 void World::requestTerrainSettings(TerrainHeightmapSettings settings)
 {
     settings.clamp();
@@ -255,6 +261,7 @@ void World::publishSnapshot()
     }
     if (m_heightmapGenerator) {
         snapshot.terrainSettings = m_heightmapGenerator->settings();
+        snapshot.terrainHeightmapTiles = m_heightmapGenerator->cachedTiles();
     }
 
     std::scoped_lock lock(m_snapshotMutex);

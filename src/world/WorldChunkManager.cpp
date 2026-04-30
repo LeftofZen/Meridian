@@ -79,6 +79,43 @@ struct TerrainMaterialSample {
     return std::clamp(value, 0.0F, 1.0F);
 }
 
+[[nodiscard]] float sampleHeightmapChannel(
+    const std::vector<float>& channel,
+    std::uint32_t resolution,
+    float normalizedX,
+    float normalizedZ,
+    float fallback) noexcept
+{
+    if (resolution == 0 ||
+        channel.size() < static_cast<std::size_t>(resolution) * static_cast<std::size_t>(resolution)) {
+        return fallback;
+    }
+
+    const float sampleX = saturate(normalizedX) * static_cast<float>(resolution) - 0.5F;
+    const float sampleZ = saturate(normalizedZ) * static_cast<float>(resolution) - 0.5F;
+    const int x0 = std::clamp(static_cast<int>(std::floor(sampleX)), 0, static_cast<int>(resolution) - 1);
+    const int z0 = std::clamp(static_cast<int>(std::floor(sampleZ)), 0, static_cast<int>(resolution) - 1);
+    const int x1 = std::min(x0 + 1, static_cast<int>(resolution) - 1);
+    const int z1 = std::min(z0 + 1, static_cast<int>(resolution) - 1);
+    const float tx = sampleX - static_cast<float>(x0);
+    const float tz = sampleZ - static_cast<float>(z0);
+
+    const auto sampleAt = [&](int sampleXIndex, int sampleZIndex) noexcept {
+        const std::size_t sampleIndex =
+            static_cast<std::size_t>(sampleXIndex) +
+            static_cast<std::size_t>(sampleZIndex) * static_cast<std::size_t>(resolution);
+        return channel[sampleIndex];
+    };
+
+    const float value00 = sampleAt(x0, z0);
+    const float value10 = sampleAt(x1, z0);
+    const float value01 = sampleAt(x0, z1);
+    const float value11 = sampleAt(x1, z1);
+    const float value0 = std::lerp(value00, value10, tx);
+    const float value1 = std::lerp(value01, value11, tx);
+    return std::lerp(value0, value1, tz);
+}
+
 [[nodiscard]] TerrainMaterialSample sampleTerrainMaterial(
     float surfaceHeight,
     float ridgeMap,
@@ -852,6 +889,10 @@ void WorldChunkManager::dispatchChunkJobs()
                     if (std::optional<WorldChunkStorage> cachedChunk =
                             chunkDatabase->loadChunk(coord, key, settingsSignature);
                         cachedChunk.has_value()) {
+                        if (heightmapGenerator != nullptr) {
+                            ZoneScopedN("WorldChunkManager::populateCachedHeightmapTile");
+                            (void)heightmapGenerator->generateTile(coord);
+                        }
                         return std::optional<ChunkJobResult>{ChunkJobResult{
                             .chunkStorage = std::move(*cachedChunk),
                             .loadedFromDatabase = true,
@@ -987,14 +1028,22 @@ std::vector<VoxelSample> WorldChunkManager::generateHeightmapChunkVoxels(
     const int chunkBaseY = coord.y * kWorldChunkSize;
     for (std::uint32_t localZ = 0; localZ < kWorldChunkResolution; ++localZ) {
         for (std::uint32_t localX = 0; localX < kWorldChunkResolution; ++localX) {
-            const std::size_t heightIndex =
-                static_cast<std::size_t>(localX) +
-                static_cast<std::size_t>(localZ) * tile.resolution;
-            const float grayscale = heightIndex < tile.grayscale.size() ? tile.grayscale[heightIndex] : 0.5F;
-            const float ridgeMap = heightIndex < tile.ridgeMap.size() ? tile.ridgeMap[heightIndex] : 0.5F;
-            const float erosion = heightIndex < tile.erosion.size() ? tile.erosion[heightIndex] : 0.5F;
-            const float treeCoverage =
-                heightIndex < tile.treeCoverage.size() ? tile.treeCoverage[heightIndex] : 0.0F;
+            const float normalizedX =
+                (static_cast<float>(localX) + 0.5F) / static_cast<float>(kWorldChunkResolution);
+            const float normalizedZ =
+                (static_cast<float>(localZ) + 0.5F) / static_cast<float>(kWorldChunkResolution);
+            const float grayscale =
+                sampleHeightmapChannel(tile.grayscale, tile.resolution, normalizedX, normalizedZ, 0.5F);
+            const float ridgeMap =
+                sampleHeightmapChannel(tile.ridgeMap, tile.resolution, normalizedX, normalizedZ, 0.5F);
+            const float erosion =
+                sampleHeightmapChannel(tile.erosion, tile.resolution, normalizedX, normalizedZ, 0.5F);
+            const float treeCoverage = sampleHeightmapChannel(
+                tile.treeCoverage,
+                tile.resolution,
+                normalizedX,
+                normalizedZ,
+                0.0F);
             const float surfaceHeight =
                 settings.minWorldHeight + grayscale * settings.heightRange();
             const TerrainMaterialSample materialSample = sampleTerrainMaterial(

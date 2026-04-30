@@ -27,17 +27,17 @@ struct TerrainHeightmapTile {
 
 struct TerrainHeightmapSettings {
     std::uint32_t tileResolution{kWorldChunkResolution};
-    std::uint32_t octaveCount{4};
-    std::uint32_t heightOctaveCount{3};
+    std::uint32_t octaveCount{8};
+    std::uint32_t heightOctaveCount{8};
     std::uint32_t worldSeed{1337};
     float minWorldHeight{-48.0F};
-    float maxWorldHeight{96.0F};
-    float baseFrequency{0.0065F};
+    float maxWorldHeight{512.0F};
+    float baseFrequency{0.001F};
     float heightFrequency{3.0F};
     float heightAmplitude{0.125F};
     float heightLacunarity{2.0F};
-    float heightGain{0.1F};
-    float erosionFrequency{0.15F};
+    float heightGain{0.25F};
+    float erosionFrequency{0.4F};
     float erosionStrength{0.18F};
     float octaveGain{0.55F};
     float lacunarity{2.0F};
@@ -46,7 +46,7 @@ struct TerrainHeightmapSettings {
     float stackedDetail{1.5F};
     float normalizationFactor{0.5F};
     float straightSteeringStrength{1.0F};
-    float gullyWeight{0.5F};
+    float gullyWeight{0.75F};
     float ridgeRounding{0.1F};
     float creaseRounding{0.0F};
     float inputRoundingMultiplier{0.1F};
@@ -76,6 +76,7 @@ public:
     void shutdown() noexcept;
 
     [[nodiscard]] std::shared_ptr<TerrainHeightmapTile> generateTile(ChunkCoord coord);
+    [[nodiscard]] std::vector<std::shared_ptr<const TerrainHeightmapTile>> cachedTiles() const;
     [[nodiscard]] TerrainHeightmapSettings settings() const;
     void setSettings(const TerrainHeightmapSettings& settings);
     void invalidateCache() noexcept;

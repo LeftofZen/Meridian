@@ -5,11 +5,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <iterator>
+#include <limits>
 
 namespace Meridian {
 
 namespace {
+
+enum class TerrainHeightmapPreviewChannel : int {
+    Height = 0,
+    RidgeMap = 1,
+    Erosion = 2,
+    TreeCoverage = 3,
+};
+
+struct TerrainChannelRange {
+    float minimum{0.0F};
+    float maximum{1.0F};
+    bool hasSamples{false};
+};
 
 [[nodiscard]] std::array<float, 3> normalizeDirection(std::array<float, 3> direction) noexcept
 {
@@ -80,6 +95,288 @@ void sanitizeLightingState(LightingRenderSnapshot& lighting) noexcept
     };
 }
 
+[[nodiscard]] ImU32 makeTerrainPreviewColor(float normalizedHeight) noexcept
+{
+    const float value = std::clamp(normalizedHeight, 0.0F, 1.0F);
+    const std::uint8_t channel = static_cast<std::uint8_t>(value * 255.0F);
+    return IM_COL32(channel, channel, channel, 255);
+}
+
+[[nodiscard]] TerrainHeightmapPreviewChannel terrainPreviewChannelFromIndex(int index) noexcept
+{
+    switch (index) {
+    case 1:
+        return TerrainHeightmapPreviewChannel::RidgeMap;
+    case 2:
+        return TerrainHeightmapPreviewChannel::Erosion;
+    case 3:
+        return TerrainHeightmapPreviewChannel::TreeCoverage;
+    default:
+        return TerrainHeightmapPreviewChannel::Height;
+    }
+}
+
+[[nodiscard]] const char* terrainPreviewChannelLabel(
+    TerrainHeightmapPreviewChannel channel) noexcept
+{
+    switch (channel) {
+    case TerrainHeightmapPreviewChannel::Height:
+        return "Height";
+    case TerrainHeightmapPreviewChannel::RidgeMap:
+        return "Ridge";
+    case TerrainHeightmapPreviewChannel::Erosion:
+        return "Erosion";
+    case TerrainHeightmapPreviewChannel::TreeCoverage:
+        return "Tree Coverage";
+    }
+
+    return "Height";
+}
+
+[[nodiscard]] const char* terrainPreviewChannelUnits(
+    TerrainHeightmapPreviewChannel channel) noexcept
+{
+    return channel == TerrainHeightmapPreviewChannel::Height ? "m" : "normalized";
+}
+
+[[nodiscard]] const std::vector<float>* terrainPreviewSamples(
+    const TerrainHeightmapTile& tile,
+    TerrainHeightmapPreviewChannel channel) noexcept
+{
+    switch (channel) {
+    case TerrainHeightmapPreviewChannel::Height:
+        return &tile.grayscale;
+    case TerrainHeightmapPreviewChannel::RidgeMap:
+        return &tile.ridgeMap;
+    case TerrainHeightmapPreviewChannel::Erosion:
+        return &tile.erosion;
+    case TerrainHeightmapPreviewChannel::TreeCoverage:
+        return &tile.treeCoverage;
+    }
+
+    return &tile.grayscale;
+}
+
+[[nodiscard]] ImU32 makeTerrainPreviewColor(
+    float normalizedValue,
+    TerrainHeightmapPreviewChannel channel) noexcept
+{
+    const float value = std::clamp(normalizedValue, 0.0F, 1.0F);
+
+    switch (channel) {
+    case TerrainHeightmapPreviewChannel::Height: {
+        const std::uint8_t grayscale = static_cast<std::uint8_t>(value * 255.0F);
+        return IM_COL32(grayscale, grayscale, grayscale, 255);
+    }
+    case TerrainHeightmapPreviewChannel::RidgeMap:
+        return IM_COL32(
+            static_cast<std::uint8_t>(48.0F + value * 207.0F),
+            static_cast<std::uint8_t>(24.0F + value * 168.0F),
+            static_cast<std::uint8_t>(16.0F + value * 96.0F),
+            255);
+    case TerrainHeightmapPreviewChannel::Erosion:
+        return IM_COL32(
+            static_cast<std::uint8_t>(16.0F + value * 64.0F),
+            static_cast<std::uint8_t>(48.0F + value * 144.0F),
+            static_cast<std::uint8_t>(88.0F + value * 167.0F),
+            255);
+    case TerrainHeightmapPreviewChannel::TreeCoverage:
+        return IM_COL32(
+            static_cast<std::uint8_t>(18.0F + value * 66.0F),
+            static_cast<std::uint8_t>(36.0F + value * 186.0F),
+            static_cast<std::uint8_t>(18.0F + value * 66.0F),
+            255);
+    }
+
+    return makeTerrainPreviewColor(value);
+}
+
+[[nodiscard]] TerrainChannelRange computeTerrainChannelRange(
+    const std::vector<std::shared_ptr<const TerrainHeightmapTile>>& tiles,
+    TerrainHeightmapPreviewChannel channel) noexcept
+{
+    TerrainChannelRange range{};
+
+    for (const std::shared_ptr<const TerrainHeightmapTile>& tile : tiles) {
+        if (!tile) {
+            continue;
+        }
+
+        const std::vector<float>* samples = terrainPreviewSamples(*tile, channel);
+        if (samples == nullptr || samples->empty()) {
+            continue;
+        }
+
+        const auto [minimumIt, maximumIt] = std::minmax_element(samples->begin(), samples->end());
+        if (!range.hasSamples) {
+            range.minimum = *minimumIt;
+            range.maximum = *maximumIt;
+            range.hasSamples = true;
+            continue;
+        }
+
+        range.minimum = std::min(range.minimum, *minimumIt);
+        range.maximum = std::max(range.maximum, *maximumIt);
+    }
+
+    if (!range.hasSamples) {
+        range.minimum = 0.0F;
+        range.maximum = 1.0F;
+    }
+
+    return range;
+}
+
+void drawTerrainMosaic(
+    const std::vector<std::shared_ptr<const TerrainHeightmapTile>>& tiles,
+    TerrainHeightmapPreviewChannel channel,
+    const TerrainChannelRange& range,
+    const CameraRenderState& camera)
+{
+    constexpr float kViewerHeight = 420.0F;
+    constexpr float kCanvasPadding = 12.0F;
+    constexpr float kPreferredChunkExtent = 96.0F;
+    constexpr float kMinimumChunkExtent = 24.0F;
+    constexpr float kCameraMarkerRadius = 5.0F;
+
+    int minimumChunkX = std::numeric_limits<int>::max();
+    int maximumChunkX = std::numeric_limits<int>::min();
+    int minimumChunkZ = std::numeric_limits<int>::max();
+    int maximumChunkZ = std::numeric_limits<int>::min();
+    bool hasValidTile = false;
+
+    for (const std::shared_ptr<const TerrainHeightmapTile>& tile : tiles) {
+        if (!tile || tile->resolution == 0) {
+            continue;
+        }
+
+        const std::vector<float>* samples = terrainPreviewSamples(*tile, channel);
+        if (samples == nullptr || samples->size() !=
+                                      static_cast<std::size_t>(tile->resolution) * tile->resolution) {
+            continue;
+        }
+
+        minimumChunkX = std::min(minimumChunkX, tile->coord.x);
+        maximumChunkX = std::max(maximumChunkX, tile->coord.x);
+        minimumChunkZ = std::min(minimumChunkZ, tile->coord.z);
+        maximumChunkZ = std::max(maximumChunkZ, tile->coord.z);
+        hasValidTile = true;
+    }
+
+    if (!hasValidTile) {
+        ImGui::TextDisabled("No cached %s samples are available.", terrainPreviewChannelLabel(channel));
+        return;
+    }
+
+    ImGui::BeginChild(
+        "TerrainHeightmapViewer",
+        ImVec2(0.0F, kViewerHeight),
+        true,
+        ImGuiWindowFlags_HorizontalScrollbar);
+
+    const int chunkSpanX = maximumChunkX - minimumChunkX + 1;
+    const int chunkSpanZ = maximumChunkZ - minimumChunkZ + 1;
+    const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0F);
+    const float chunkExtent = std::clamp(
+        (availableWidth - kCanvasPadding * 2.0F) / static_cast<float>(chunkSpanX),
+        kMinimumChunkExtent,
+        kPreferredChunkExtent);
+    const ImVec2 canvasSize(
+        kCanvasPadding * 2.0F + chunkExtent * static_cast<float>(chunkSpanX),
+        kCanvasPadding * 2.0F + chunkExtent * static_cast<float>(chunkSpanZ));
+
+    ImGui::InvisibleButton("##terrain_heightmap_mosaic", canvasSize);
+    const ImVec2 canvasMin = ImGui::GetItemRectMin();
+    const ImVec2 canvasMax = ImGui::GetItemRectMax();
+    const ImVec2 mosaicMin(canvasMin.x + kCanvasPadding, canvasMin.y + kCanvasPadding);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(canvasMin, canvasMax, IM_COL32(14, 16, 20, 255));
+
+    for (int gridX = 0; gridX <= chunkSpanX; ++gridX) {
+        const float x = mosaicMin.x + static_cast<float>(gridX) * chunkExtent;
+        drawList->AddLine(
+            ImVec2(x, mosaicMin.y),
+            ImVec2(x, mosaicMin.y + chunkExtent * static_cast<float>(chunkSpanZ)),
+            IM_COL32(255, 255, 255, 24));
+    }
+    for (int gridZ = 0; gridZ <= chunkSpanZ; ++gridZ) {
+        const float y = mosaicMin.y + static_cast<float>(gridZ) * chunkExtent;
+        drawList->AddLine(
+            ImVec2(mosaicMin.x, y),
+            ImVec2(mosaicMin.x + chunkExtent * static_cast<float>(chunkSpanX), y),
+            IM_COL32(255, 255, 255, 24));
+    }
+
+    const float valueRange = std::max(range.maximum - range.minimum, 0.0001F);
+    for (const std::shared_ptr<const TerrainHeightmapTile>& tile : tiles) {
+        if (!tile || tile->resolution == 0) {
+            continue;
+        }
+
+        const std::vector<float>* samples = terrainPreviewSamples(*tile, channel);
+        if (samples == nullptr || samples->size() !=
+                                      static_cast<std::size_t>(tile->resolution) * tile->resolution) {
+            continue;
+        }
+
+        const float tileOriginX =
+            mosaicMin.x + static_cast<float>(tile->coord.x - minimumChunkX) * chunkExtent;
+        const float tileOriginY =
+            mosaicMin.y + static_cast<float>(tile->coord.z - minimumChunkZ) * chunkExtent;
+        const float sampleWidth = chunkExtent / static_cast<float>(tile->resolution);
+        const float sampleHeight = chunkExtent / static_cast<float>(tile->resolution);
+        const ImVec2 tileMin(tileOriginX, tileOriginY);
+        const ImVec2 tileMax(tileOriginX + chunkExtent, tileOriginY + chunkExtent);
+
+        for (std::uint32_t row = 0; row < tile->resolution; ++row) {
+            for (std::uint32_t column = 0; column < tile->resolution; ++column) {
+                const std::size_t sampleIndex =
+                    static_cast<std::size_t>(row) * tile->resolution + column;
+                const float normalizedValue = ((*samples)[sampleIndex] - range.minimum) / valueRange;
+                const ImVec2 sampleMin(
+                    tileOriginX + static_cast<float>(column) * sampleWidth,
+                    tileOriginY + static_cast<float>(row) * sampleHeight);
+                const ImVec2 sampleMax(sampleMin.x + sampleWidth, sampleMin.y + sampleHeight);
+                drawList->AddRectFilled(
+                    sampleMin,
+                    sampleMax,
+                    makeTerrainPreviewColor(normalizedValue, channel));
+            }
+        }
+
+        drawList->AddRect(tileMin, tileMax, IM_COL32(255, 255, 255, 72));
+
+        char label[32]{};
+        std::snprintf(label, sizeof(label), "(%d, %d)", tile->coord.x, tile->coord.z);
+        drawList->AddText(
+            ImVec2(tileMin.x + 4.0F, tileMin.y + 4.0F),
+            IM_COL32(255, 255, 255, 196),
+            label);
+    }
+
+    const float cameraChunkX = camera.position[0] / static_cast<float>(kWorldChunkSize);
+    const float cameraChunkZ = camera.position[2] / static_cast<float>(kWorldChunkSize);
+    const ImVec2 cameraMarker(
+        mosaicMin.x + (cameraChunkX - static_cast<float>(minimumChunkX)) * chunkExtent,
+        mosaicMin.y + (cameraChunkZ - static_cast<float>(minimumChunkZ)) * chunkExtent);
+    const bool cameraInsideMosaic =
+        cameraMarker.x >= mosaicMin.x &&
+        cameraMarker.x <= mosaicMin.x + chunkExtent * static_cast<float>(chunkSpanX) &&
+        cameraMarker.y >= mosaicMin.y &&
+        cameraMarker.y <= mosaicMin.y + chunkExtent * static_cast<float>(chunkSpanZ);
+    if (cameraInsideMosaic) {
+        drawList->AddCircleFilled(cameraMarker, kCameraMarkerRadius, IM_COL32(255, 96, 96, 255));
+        drawList->AddCircle(cameraMarker, kCameraMarkerRadius + 2.0F, IM_COL32(255, 255, 255, 192));
+        drawList->AddText(
+            ImVec2(cameraMarker.x + 8.0F, cameraMarker.y - 18.0F),
+            IM_COL32(255, 220, 220, 255),
+            "Camera");
+    }
+
+    drawList->AddRect(canvasMin, canvasMax, IM_COL32(255, 255, 255, 48));
+    ImGui::EndChild();
+}
+
 } // namespace
 
 bool DebugOverlayRenderer::init(VulkanContext& context)
@@ -100,17 +397,19 @@ void DebugOverlayRenderer::beginFrame()
     }
 
     m_renderStateSnapshot = m_renderStateStore->snapshot();
-    buildFrameStatsWindow();
+    buildRenderingWindow();
+    buildTerrainWindow();
+    buildLightingWindow();
 }
 
-void DebugOverlayRenderer::buildFrameStatsWindow()
+void DebugOverlayRenderer::buildRenderingWindow()
 {
     if (m_context == nullptr || m_renderStateStore == nullptr) {
         return;
     }
 
     ImGui::SetNextWindowSize(ImVec2(540.0F, 0.0F), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Runtime Stats");
+    ImGui::Begin("Rendering & Path Tracing");
     ImGui::Text(
         "Update delta: %.3f ms (%.1f UPS)",
         m_renderStateSnapshot.timing.updateDeltaMilliseconds,
@@ -512,10 +811,21 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         ImGui::TextUnformatted("Boost: Left Shift");
     }
 
-    buildLightingControls();
+    ImGui::End();
+}
 
-    if (m_getTerrainSettings && m_requestTerrainSettings) {
-        ImGui::Separator();
+void DebugOverlayRenderer::buildTerrainWindow()
+{
+    const bool hasTerrainControls = m_getTerrainSettings && m_requestTerrainSettings;
+    const bool hasTerrainPreview = static_cast<bool>(m_getTerrainHeightmapTiles);
+    if (!hasTerrainControls && !hasTerrainPreview) {
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(620.0F, 0.0F), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Terrain Generation");
+
+    if (hasTerrainControls) {
         ImGui::TextUnformatted("Terrain Erosion");
 
         TerrainHeightmapSettings terrainSettings = m_getTerrainSettings();
@@ -696,19 +1006,84 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
             terrainSettings.clamp();
             m_requestTerrainSettings(terrainSettings);
         }
+    } else {
+        ImGui::TextDisabled("Terrain settings are unavailable.");
+    }
+
+    if (hasTerrainPreview) {
+        ImGui::Separator();
+        buildTerrainHeightmapViewer();
     }
 
     ImGui::End();
 }
 
-void DebugOverlayRenderer::buildLightingControls()
+void DebugOverlayRenderer::buildLightingWindow()
 {
     if (m_renderStateStore == nullptr) {
         return;
     }
 
-    ImGui::Separator();
-    if (!ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SetNextWindowSize(ImVec2(460.0F, 0.0F), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Lighting");
+    buildLightingControls();
+    ImGui::End();
+}
+
+void DebugOverlayRenderer::buildTerrainHeightmapViewer()
+{
+    if (!ImGui::CollapsingHeader("Terrain Heightmaps", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    if (!m_getTerrainHeightmapTiles) {
+        ImGui::TextDisabled("Heightmap debug feed unavailable.");
+        return;
+    }
+
+    std::vector<std::shared_ptr<const TerrainHeightmapTile>> tiles = m_getTerrainHeightmapTiles();
+    if (tiles.empty()) {
+        ImGui::TextDisabled("No cached terrain heightmaps yet.");
+        return;
+    }
+
+    ImGui::TextDisabled("Showing cached pre-voxelization chunk tiles stitched in chunk-space.");
+
+    int selectedChannelIndex = m_terrainHeightmapPreviewChannel;
+    if (ImGui::RadioButton("Height", &selectedChannelIndex, 0)) {
+        m_terrainHeightmapPreviewChannel = selectedChannelIndex;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Ridge", &selectedChannelIndex, 1)) {
+        m_terrainHeightmapPreviewChannel = selectedChannelIndex;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Erosion", &selectedChannelIndex, 2)) {
+        m_terrainHeightmapPreviewChannel = selectedChannelIndex;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Tree Coverage", &selectedChannelIndex, 3)) {
+        m_terrainHeightmapPreviewChannel = selectedChannelIndex;
+    }
+
+    const TerrainHeightmapPreviewChannel channel =
+        terrainPreviewChannelFromIndex(m_terrainHeightmapPreviewChannel);
+    const TerrainChannelRange channelRange = computeTerrainChannelRange(tiles, channel);
+
+    drawTerrainMosaic(tiles, channel, channelRange, m_renderStateSnapshot.camera);
+    if (channelRange.hasSamples) {
+        ImGui::Text(
+            "%s range: %.3f .. %.3f %s",
+            terrainPreviewChannelLabel(channel),
+            channelRange.minimum,
+            channelRange.maximum,
+            terrainPreviewChannelUnits(channel));
+    }
+}
+
+void DebugOverlayRenderer::buildLightingControls()
+{
+    if (m_renderStateStore == nullptr) {
         return;
     }
 

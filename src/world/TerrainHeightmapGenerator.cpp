@@ -99,6 +99,20 @@ TerrainHeightmapSettings TerrainHeightmapGenerator::settings() const
     return m_settings;
 }
 
+std::vector<std::shared_ptr<const TerrainHeightmapTile>> TerrainHeightmapGenerator::cachedTiles() const
+{
+    std::scoped_lock lock(m_mutex);
+
+    std::vector<std::shared_ptr<const TerrainHeightmapTile>> tiles;
+    tiles.reserve(m_tileCache.size());
+    for (const auto& [key, tile] : m_tileCache) {
+        (void)key;
+        tiles.push_back(tile);
+    }
+
+    return tiles;
+}
+
 void TerrainHeightmapGenerator::setSettings(const TerrainHeightmapSettings& settings)
 {
     std::scoped_lock lock(m_mutex);
@@ -226,7 +240,7 @@ std::shared_ptr<TerrainHeightmapTile> TerrainHeightmapGenerator::generateTile(Ch
             m_settings.heightGain,
             static_cast<float>(m_settings.heightOctaveCount),
             static_cast<float>(m_settings.octaveCount),
-            0.0F,
+            static_cast<float>(kWorldChunkSize),
         },
     };
 

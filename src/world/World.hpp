@@ -43,6 +43,7 @@ public:
     [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
     [[nodiscard]] TerrainHeightmapSettings terrainSettings() const;
+    [[nodiscard]] std::vector<std::shared_ptr<const TerrainHeightmapTile>> terrainHeightmapTiles() const;
     void requestTerrainSettings(TerrainHeightmapSettings settings);
     void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
     void setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept;
@@ -54,6 +55,7 @@ private:
         std::size_t pendingChunkCount{0};
         std::uint64_t renderRevision{0};
         TerrainHeightmapSettings terrainSettings{};
+        std::vector<std::shared_ptr<const TerrainHeightmapTile>> terrainHeightmapTiles;
         std::vector<WorldChunkRenderData> renderData;
     };
 

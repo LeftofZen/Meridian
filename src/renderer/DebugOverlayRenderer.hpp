@@ -48,13 +48,22 @@ public:
         m_requestTerrainSettings = std::move(requestTerrainSettings);
     }
 
+    void setTerrainHeightmapTilesCallback(
+        std::function<std::vector<std::shared_ptr<const TerrainHeightmapTile>>()> getTerrainHeightmapTiles)
+    {
+        m_getTerrainHeightmapTiles = std::move(getTerrainHeightmapTiles);
+    }
+
     bool init(VulkanContext& context) override;
     void shutdown() override;
     void beginFrame() override;
 
 private:
-    void buildFrameStatsWindow();
+    void buildRenderingWindow();
+    void buildTerrainWindow();
+    void buildLightingWindow();
     void buildLightingControls();
+    void buildTerrainHeightmapViewer();
 
     VulkanContext* m_context{nullptr};
     PathTracerSettings* m_pathTracerSettings{nullptr};
@@ -64,6 +73,8 @@ private:
     std::function<void(float)> m_setUpdateRateLimit;
     std::function<TerrainHeightmapSettings()> m_getTerrainSettings;
     std::function<void(const TerrainHeightmapSettings&)> m_requestTerrainSettings;
+    std::function<std::vector<std::shared_ptr<const TerrainHeightmapTile>>()> m_getTerrainHeightmapTiles;
+    int m_terrainHeightmapPreviewChannel{0};
 };
 
 } // namespace Meridian
