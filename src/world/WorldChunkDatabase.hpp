@@ -4,9 +4,14 @@
 #include "world/WorldChunkStorage.hpp"
 
 #include <filesystem>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
+#include <unordered_map>
 
 struct MDB_env;
 using MDB_dbi = unsigned int;
@@ -35,9 +40,25 @@ public:
         std::uint64_t terrainSettingsSignature);
 
 private:
+    struct PendingChunkWrite {
+        std::uint64_t sequence{0};
+        WorldChunkStorage chunkStorage;
+        std::uint64_t terrainSettingsSignature{0};
+    };
+
+    void databaseWorkerMain();
+    [[nodiscard]] bool storeChunkNow(
+        const WorldChunkStorage& chunkStorage,
+        std::uint64_t terrainSettingsSignature);
     [[nodiscard]] bool isInitialised() const noexcept;
 
     mutable std::mutex m_mutex;
+    std::condition_variable m_workerCondition;
+    std::thread m_workerThread;
+    std::deque<std::shared_ptr<PendingChunkWrite>> m_pendingWrites;
+    std::unordered_map<ChunkKey, std::shared_ptr<PendingChunkWrite>> m_pendingWriteLookup;
+    std::uint64_t m_nextPendingWriteSequence{0};
+    bool m_stopWorker{false};
     MDB_env* m_env{nullptr};
     MDB_dbi m_chunkDatabaseHandle{0};
     bool m_initialised{false};

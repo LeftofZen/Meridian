@@ -211,6 +211,26 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
             m_pathTracerSettings->clamp();
         }
 
+        float lodFactor = m_pathTracerSettings->lodFactor;
+        if (ImGui::SliderFloat(
+                "LOD Factor",
+                &lodFactor,
+                0.0F,
+                0.2F,
+                "%.4f")) {
+            m_pathTracerSettings->lodFactor = lodFactor;
+            m_pathTracerSettings->clamp();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Coarsens octree traversal with distance.\n"
+                "Distance is measured in voxels along the Manhattan (L1) axes\n"
+                "from the camera to the node entry point. A node whose extent\n"
+                "(always a power of 2 voxels) is smaller than\n"
+                "(LOD Factor * manhattan voxels) is treated as a solid leaf.\n"
+                "0 = off (full resolution).");
+        }
+
         if (ImGui::Button(
                 m_pathTracerSettings->denoiserEnabled
                     ? "Denoiser: On"

@@ -352,7 +352,7 @@ void PathTracerRenderer::recordPreRender(VkCommandBuffer commandBuffer)
             m_renderStateSnapshot.camera.position[0],
             m_renderStateSnapshot.camera.position[1],
             m_renderStateSnapshot.camera.position[2],
-            0.0F,
+            m_settings.lodFactor,
         },
         .cameraForward = {
             m_renderStateSnapshot.camera.forward[0],

@@ -2,20 +2,22 @@
 
 #include "core/ISystem.hpp"
 #include "renderer/CameraState.hpp"
-#include "renderer/VulkanContext.hpp"
-#include "world/WorldChunkManager.hpp"
 #include "world/WorldRenderData.hpp"
-
 #include "world/TerrainHeightmapGenerator.hpp"
+#include "world/WorldChunkManager.hpp"
 
+#include <condition_variable>
 #include <cstddef>
-#include <mutex>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <thread>
 
 namespace Meridian {
 
 class TaskSystem;
+class VulkanContext;
 
 class World final : public ISystem {
 public:
@@ -46,15 +48,33 @@ public:
     void setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept;
 
 private:
-    void applyPendingTerrainSettings();
+    struct Snapshot {
+        std::size_t residentChunkCount{0};
+        std::size_t inFlightChunkCount{0};
+        std::size_t pendingChunkCount{0};
+        std::uint64_t renderRevision{0};
+        TerrainHeightmapSettings terrainSettings{};
+        std::vector<WorldChunkRenderData> renderData;
+    };
+
+    void workerMain(std::promise<void> readySignal);
+    void publishSnapshot();
 
     TaskSystem* m_tasks{nullptr};
     VulkanContext* m_vulkanContext{nullptr};
     bool m_initialised{false};
     std::unique_ptr<TerrainHeightmapGenerator> m_heightmapGenerator;
     std::unique_ptr<WorldChunkManager> m_chunkManager;
-    mutable std::mutex m_terrainSettingsMutex;
+    mutable std::mutex m_snapshotMutex;
+    Snapshot m_snapshot;
+    std::mutex m_commandMutex;
+    std::condition_variable m_commandCondition;
+    std::thread m_workerThread;
     std::optional<TerrainHeightmapSettings> m_pendingTerrainSettings;
+    std::optional<CameraRenderState> m_pendingStreamingCamera;
+    std::optional<float> m_pendingGenerationDistanceChunks;
+    bool m_tickRequested{false};
+    bool m_stopWorker{false};
 };
 
 } // namespace Meridian

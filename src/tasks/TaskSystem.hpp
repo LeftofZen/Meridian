@@ -6,12 +6,11 @@
 
 #include <tracy/Tracy.hpp>
 
+#include <atomic>
 #include <functional>
 #include <future>
 #include <memory>
-#include <sstream>
 #include <string>
-#include <thread>
 #include <stdexcept>
 #include <type_traits>
 
@@ -77,9 +76,9 @@ public:
         return m_executor->async([task = Task(std::forward<F>(task))]() mutable -> Result {
             thread_local std::string workerThreadName;
             if (workerThreadName.empty()) {
-                std::ostringstream stream;
-                stream << "Task Worker " << std::this_thread::get_id();
-                workerThreadName = stream.str();
+                static std::atomic<std::uint32_t> nextWorkerIndex{0};
+                workerThreadName = "Task Worker " +
+                    std::to_string(nextWorkerIndex.fetch_add(1, std::memory_order_relaxed) + 1U);
                 tracy::SetThreadName(workerThreadName.c_str());
             }
 

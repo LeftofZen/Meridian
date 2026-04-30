@@ -5,6 +5,7 @@
 
 #include "tasks/TaskSystem.hpp"
 
+#include <future>
 #include <tracy/Tracy.hpp>
 
 namespace Meridian {
@@ -46,6 +47,21 @@ bool World::init()
         return false;
     }
 
+    std::promise<void> readyPromise;
+    std::future<void> readyFuture = readyPromise.get_future();
+    try {
+        m_workerThread = std::thread(&World::workerMain, this, std::move(readyPromise));
+    } catch (const std::system_error& error) {
+        MRD_ERROR("World init failed: could not start world worker thread: {}", error.what());
+        m_chunkManager->shutdown();
+        m_chunkManager.reset();
+        m_heightmapGenerator->shutdown();
+        m_heightmapGenerator.reset();
+        return false;
+    }
+
+    readyFuture.get();
+
     m_initialised = true;
     MRD_INFO("World system initialized");
     return true;
@@ -54,6 +70,15 @@ bool World::init()
 void World::shutdown()
 {
     if (m_initialised) {
+        {
+            std::scoped_lock lock(m_commandMutex);
+            m_stopWorker = true;
+            m_tickRequested = true;
+        }
+        m_commandCondition.notify_one();
+        if (m_workerThread.joinable()) {
+            m_workerThread.join();
+        }
         if (m_chunkManager) {
             m_chunkManager->shutdown();
             m_chunkManager.reset();
@@ -69,90 +94,171 @@ void World::shutdown()
 
 void World::update(float deltaTimeSeconds)
 {
-    if (!m_initialised || !m_chunkManager) {
+    (void)deltaTimeSeconds;
+
+    if (!m_initialised) {
         return;
     }
 
-    ZoneScopedN("World::update");
-    applyPendingTerrainSettings();
-    m_chunkManager->update(deltaTimeSeconds);
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_tickRequested = true;
+    }
+    m_commandCondition.notify_one();
 }
 
 std::size_t World::getResidentChunkCount() const noexcept
 {
-    return m_chunkManager ? m_chunkManager->getResidentChunkCount() : 0;
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.residentChunkCount;
 }
 
 std::size_t World::getInFlightChunkCount() const noexcept
 {
-    return m_chunkManager ? m_chunkManager->getInFlightChunkCount() : 0;
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.inFlightChunkCount;
 }
 
 std::size_t World::getPendingChunkCount() const noexcept
 {
-    return m_chunkManager ? m_chunkManager->getPendingChunkCount() : 0;
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.pendingChunkCount;
 }
 
 std::uint64_t World::getRenderRevision() const noexcept
 {
-    return m_chunkManager ? m_chunkManager->renderRevision() : 0;
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.renderRevision;
 }
 
 std::vector<WorldChunkRenderData> World::buildRenderData() const
 {
-    return m_chunkManager ? m_chunkManager->buildRenderData() : std::vector<WorldChunkRenderData>{};
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.renderData;
 }
 
 void World::setStreamingCamera(const CameraRenderState& cameraState) noexcept
 {
-    if (m_chunkManager) {
-        m_chunkManager->setStreamingCamera(cameraState);
+    if (!m_initialised) {
+        return;
     }
+
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_pendingStreamingCamera = cameraState;
+    }
+    m_commandCondition.notify_one();
 }
 
 void World::setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept
 {
-    if (m_chunkManager) {
-        m_chunkManager->setChunkGenerationDistanceChunks(generationDistanceChunks);
+    if (!m_initialised) {
+        return;
     }
+
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_pendingGenerationDistanceChunks = generationDistanceChunks;
+    }
+    m_commandCondition.notify_one();
 }
 
 TerrainHeightmapSettings World::terrainSettings() const
 {
-    if (!m_heightmapGenerator) {
-        return TerrainHeightmapSettings{};
-    }
-
-    return m_heightmapGenerator->settings();
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.terrainSettings;
 }
 
 void World::requestTerrainSettings(TerrainHeightmapSettings settings)
 {
     settings.clamp();
-    std::scoped_lock lock(m_terrainSettingsMutex);
-    m_pendingTerrainSettings = settings;
-}
-
-void World::applyPendingTerrainSettings()
-{
-    if (!m_heightmapGenerator || !m_chunkManager) {
+    if (!m_initialised) {
         return;
     }
 
-    ZoneScopedN("World::applyPendingTerrainSettings");
-    std::optional<TerrainHeightmapSettings> pendingSettings;
     {
-        std::scoped_lock lock(m_terrainSettingsMutex);
-        if (!m_pendingTerrainSettings.has_value()) {
-            return;
+        std::scoped_lock lock(m_commandMutex);
+        m_pendingTerrainSettings = settings;
+    }
+    m_commandCondition.notify_one();
+}
+
+void World::workerMain(std::promise<void> readySignal)
+{
+    tracy::SetThreadName("World API Worker");
+    publishSnapshot();
+    readySignal.set_value();
+
+    for (;;) {
+        bool stopWorker = false;
+        bool tickRequested = false;
+        std::optional<TerrainHeightmapSettings> pendingTerrainSettings;
+        std::optional<CameraRenderState> pendingStreamingCamera;
+        std::optional<float> pendingGenerationDistanceChunks;
+
+        {
+            std::unique_lock lock(m_commandMutex);
+            m_commandCondition.wait_for(lock, std::chrono::milliseconds(16), [this]() {
+                return m_stopWorker ||
+                    m_tickRequested ||
+                    m_pendingTerrainSettings.has_value() ||
+                    m_pendingStreamingCamera.has_value() ||
+                    m_pendingGenerationDistanceChunks.has_value();
+            });
+
+            stopWorker = m_stopWorker;
+            tickRequested = m_tickRequested;
+            m_tickRequested = false;
+            pendingTerrainSettings = m_pendingTerrainSettings;
+            m_pendingTerrainSettings.reset();
+            pendingStreamingCamera = m_pendingStreamingCamera;
+            m_pendingStreamingCamera.reset();
+            pendingGenerationDistanceChunks = m_pendingGenerationDistanceChunks;
+            m_pendingGenerationDistanceChunks.reset();
         }
 
-        pendingSettings = m_pendingTerrainSettings;
-        m_pendingTerrainSettings.reset();
+        if (pendingGenerationDistanceChunks.has_value() && m_chunkManager) {
+            m_chunkManager->setChunkGenerationDistanceChunks(*pendingGenerationDistanceChunks);
+        }
+        if (pendingStreamingCamera.has_value() && m_chunkManager) {
+            m_chunkManager->setStreamingCamera(*pendingStreamingCamera);
+        }
+        if (pendingTerrainSettings.has_value()) {
+            if (m_heightmapGenerator) {
+                m_heightmapGenerator->setSettings(*pendingTerrainSettings);
+            }
+            if (m_chunkManager) {
+                m_chunkManager->rebuildActiveTerrain();
+            }
+        }
+        if ((tickRequested || pendingTerrainSettings.has_value()) && m_chunkManager) {
+            m_chunkManager->update(0.0F);
+        }
+
+        publishSnapshot();
+
+        if (stopWorker) {
+            return;
+        }
+    }
+}
+
+void World::publishSnapshot()
+{
+    Snapshot snapshot{};
+    if (m_chunkManager) {
+        snapshot.residentChunkCount = m_chunkManager->getResidentChunkCount();
+        snapshot.inFlightChunkCount = m_chunkManager->getInFlightChunkCount();
+        snapshot.pendingChunkCount = m_chunkManager->getPendingChunkCount();
+        snapshot.renderRevision = m_chunkManager->renderRevision();
+        snapshot.renderData = m_chunkManager->buildRenderData();
+    }
+    if (m_heightmapGenerator) {
+        snapshot.terrainSettings = m_heightmapGenerator->settings();
     }
 
-    m_heightmapGenerator->setSettings(*pendingSettings);
-    m_chunkManager->rebuildActiveTerrain();
+    std::scoped_lock lock(m_snapshotMutex);
+    m_snapshot = std::move(snapshot);
 }
 
 } // namespace Meridian
