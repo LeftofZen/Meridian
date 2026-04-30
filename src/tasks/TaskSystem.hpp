@@ -7,6 +7,7 @@
 #include <tracy/Tracy.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>

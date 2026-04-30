@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <vector>
