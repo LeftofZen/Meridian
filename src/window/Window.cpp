@@ -26,7 +26,7 @@ void SetWindowIcon(SDL_Window* window)
     SDL_Surface* iconSurface = IMG_Load(iconPath.string().c_str());
 
     if (iconSurface == nullptr) {
-        MRD_WARN("Failed to load window icon '{}': {}", iconPath.string(), SDL_GetError());
+        MRD_WARN("Failed to load window icon '{}': {}", iconPath.string(), IMG_GetError());
         return;
     }
 
