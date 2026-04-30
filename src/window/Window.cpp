@@ -20,7 +20,6 @@ void SetWindowIcon(SDL_Window* window)
     }
 
     const std::filesystem::path iconPath = std::filesystem::path(basePath) / kWindowIconFileName;
-    SDL_free(const_cast<char*>(basePath));
 
     SDL_Surface* iconSurface = SDL_LoadPNG(iconPath.string().c_str());
 
