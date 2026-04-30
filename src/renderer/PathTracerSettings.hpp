@@ -14,6 +14,7 @@ struct PathTracerSettings {
     int maxBounces{2};
     int samplesPerPixel{2};
     int maxDdaSteps{64};
+    float lodFactor{0.0F};
     bool denoiserEnabled{true};
     int denoiserAtrousIterations{4};
     float denoiserTemporalResponse{0.10F};
@@ -49,6 +50,7 @@ struct PathTracerSettings {
         maxBounces = std::clamp(maxBounces, 1, 8);
         samplesPerPixel = std::clamp(samplesPerPixel, 1, 16);
         maxDdaSteps = std::clamp(maxDdaSteps, 16, 4096);
+        lodFactor = std::clamp(lodFactor, 0.0F, 0.2F);
         denoiserAtrousIterations = std::clamp(denoiserAtrousIterations, 0, 6);
         denoiserTemporalResponse = std::clamp(denoiserTemporalResponse, 0.01F, 1.0F);
         denoiserColorPhi = std::clamp(denoiserColorPhi, 0.1F, 24.0F);

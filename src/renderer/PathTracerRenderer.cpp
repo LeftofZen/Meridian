@@ -22,23 +22,6 @@ constexpr VkFormat kTraceGuideFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kHistoryColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr std::uint32_t kMaxHistoryFrames = 32U;
 
-[[nodiscard]] std::int32_t worldToChunkCoord(float worldPosition, std::uint32_t chunkResolution) noexcept
-{
-    return static_cast<std::int32_t>(
-        std::floor(worldPosition / std::max(1.0F, static_cast<float>(chunkResolution))));
-}
-
-[[nodiscard]] std::array<std::int32_t, 3> cameraChunkCoord(
-    const CameraRenderState& camera,
-    std::uint32_t chunkResolution) noexcept
-{
-    return {
-        worldToChunkCoord(camera.position[0], chunkResolution),
-        worldToChunkCoord(camera.position[1], chunkResolution),
-        worldToChunkCoord(camera.position[2], chunkResolution),
-    };
-}
-
 [[nodiscard]] std::array<float, 4> packVec4(const std::array<float, 3>& value, float w) noexcept
 {
     return {value[0], value[1], value[2], w};
@@ -150,14 +133,10 @@ void PathTracerRenderer::beginFrame()
 
     if (m_renderStateStore != nullptr) {
         m_renderStateSnapshot = m_renderStateStore->snapshot();
-        const std::array<std::int32_t, 3> currentCameraChunkCoord = cameraChunkCoord(
-            m_renderStateSnapshot.camera,
-            frameResources.chunkResolution);
         const bool sceneChanged =
             m_renderStateSnapshot.world.revision != frameResources.worldRevision ||
             m_renderStateSnapshot.lighting.revision != frameResources.lightingRevision ||
-            m_renderStateSnapshot.worldRenderSettings.revision != frameResources.renderSettingsRevision ||
-            currentCameraChunkCoord != frameResources.cameraChunkCoord;
+            m_renderStateSnapshot.worldRenderSettings.revision != frameResources.renderSettingsRevision;
 
         if (sceneChanged) {
             if (!uploadSceneData(frameResources)) {
@@ -176,10 +155,10 @@ void PathTracerRenderer::beginFrame()
         previousFrameResources.worldRevision == m_renderStateSnapshot.world.revision &&
         previousFrameResources.lightingRevision == m_renderStateSnapshot.lighting.revision &&
         previousFrameResources.renderSettingsRevision == m_renderStateSnapshot.worldRenderSettings.revision;
-    const GpuImage& historySourceImage = previousFrameSlot != m_currentFrameSlot
+    const GpuImage& historySourceImage = historyValid
         ? previousFrameResources.historyColor
-        : frameResources.filterPing;
-    const GpuImage& historySourceGuide = previousFrameSlot != m_currentFrameSlot
+        : frameResources.traceColor;
+    const GpuImage& historySourceGuide = historyValid
         ? previousFrameResources.traceGuide
         : frameResources.traceGuide;
 
@@ -373,7 +352,7 @@ void PathTracerRenderer::recordPreRender(VkCommandBuffer commandBuffer)
             m_renderStateSnapshot.camera.position[0],
             m_renderStateSnapshot.camera.position[1],
             m_renderStateSnapshot.camera.position[2],
-            0.0F,
+            m_settings.lodFactor,
         },
         .cameraForward = {
             m_renderStateSnapshot.camera.forward[0],
@@ -1234,10 +1213,13 @@ bool PathTracerRenderer::createPipeline()
     colorBlending.attachmentCount = static_cast<std::uint32_t>(colorBlendAttachments.size());
     colorBlending.pAttachments = colorBlendAttachments.data();
 
-    const std::array<VkDynamicState, 2> dynamicStates{
+    std::vector<VkDynamicState> dynamicStates{
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
     };
+    if (m_context->supportsFragmentShadingRate()) {
+        dynamicStates.push_back(VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
+    }
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
@@ -1693,12 +1675,6 @@ bool PathTracerRenderer::uploadSceneData(FrameResources& frameResources)
         return false;
     }
 
-    const std::uint32_t chunkResolution = m_renderStateSnapshot.world.chunks.empty()
-        ? frameResources.chunkResolution
-        : m_renderStateSnapshot.world.chunks.front().voxelResolution;
-    const std::array<std::int32_t, 3> currentCameraChunkCoord =
-        cameraChunkCoord(m_renderStateSnapshot.camera, chunkResolution);
-
     std::vector<GpuChunkRecord> chunkRecords;
     std::vector<std::uint32_t> octreeNodeWords;
     std::vector<std::uint32_t> chunkLookup;
@@ -1858,7 +1834,6 @@ bool PathTracerRenderer::uploadSceneData(FrameResources& frameResources)
     frameResources.sceneMax = sceneMax;
     frameResources.worldRevision = m_renderStateSnapshot.world.revision;
     frameResources.lightingRevision = m_renderStateSnapshot.lighting.revision;
-    frameResources.cameraChunkCoord = currentCameraChunkCoord;
     frameResources.renderSettingsRevision = m_renderStateSnapshot.worldRenderSettings.revision;
 
     const VkDeviceSize chunkBufferSize =

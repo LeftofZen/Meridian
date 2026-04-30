@@ -8,10 +8,14 @@
 #include "world/WorldSpatialHashGrid.hpp"
 
 #include <cstddef>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <future>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -38,7 +42,7 @@ public:
     [[nodiscard]] std::size_t getResidentChunkCount() const noexcept;
     [[nodiscard]] std::size_t getInFlightChunkCount() const noexcept;
     [[nodiscard]] std::size_t getPendingChunkCount() const noexcept;
-    [[nodiscard]] std::uint64_t renderRevision() const noexcept { return m_renderRevision; }
+    [[nodiscard]] std::uint64_t renderRevision() const noexcept;
     [[nodiscard]] std::vector<WorldChunkRenderData> buildRenderData() const;
 
     void setStreamingCamera(const CameraRenderState& cameraState) noexcept;
@@ -59,20 +63,37 @@ private:
         ChunkStatus status{ChunkStatus::Requested};
     };
 
-    struct GeneratedChunk {
+    struct ChunkJobResult {
         WorldChunkStorage chunkStorage;
+        bool loadedFromDatabase{false};
     };
 
     struct ChunkJob {
         ChunkCoord coord;
         ChunkKey key{0};
-        std::future<GeneratedChunk> future;
+        std::future<std::optional<ChunkJobResult>> future;
     };
+
+    struct Snapshot {
+        std::size_t residentChunkCount{0};
+        std::size_t inFlightChunkCount{0};
+        std::size_t pendingChunkCount{0};
+        std::uint64_t renderRevision{0};
+        std::vector<WorldChunkRenderData> renderData;
+    };
+
+    void workerMain(std::promise<bool> initResult);
+    void updateWorker();
+    void setStreamingCameraWorker(const CameraRenderState& cameraState) noexcept;
+    void setChunkGenerationDistanceChunksWorker(float generationDistanceChunks) noexcept;
+    void rebuildActiveTerrainWorker();
+    void publishSnapshot();
 
     void queueChunksAroundFocus();
     void requestChunk(ChunkCoord coord);
     void dispatchChunkJobs();
     void collectCompletedJobs();
+    void drainInFlightJobs();
     void pruneChunksOutsideRetention();
     void persistResidentChunks();
     void persistResidentChunk(const WorldChunkStorage& chunkStorage);
@@ -84,7 +105,7 @@ private:
     [[nodiscard]] int retentionRadiusXZ() const noexcept;
     [[nodiscard]] static WorldChunkRenderData createRenderData(const WorldChunkStorage& chunkStorage);
 
-    [[nodiscard]] static GeneratedChunk generateChunk(
+    [[nodiscard]] static ChunkJobResult generateChunk(
         ChunkCoord coord,
         std::shared_ptr<const TerrainHeightmapTile> heightmapTile,
         TerrainHeightmapSettings heightmapSettings);
@@ -104,6 +125,18 @@ private:
 
     TaskSystem& m_tasks;
     TerrainHeightmapGenerator* m_heightmapGenerator{nullptr};
+    mutable std::mutex m_snapshotMutex;
+    Snapshot m_snapshot;
+    std::mutex m_commandMutex;
+    std::condition_variable m_commandCondition;
+    std::thread m_workerThread;
+    CameraRenderState m_pendingStreamingCameraState{};
+    float m_pendingGenerationDistanceChunks{kDefaultGenerationDistanceChunks};
+    bool m_stopWorker{false};
+    bool m_updateRequested{false};
+    bool m_rebuildRequested{false};
+    bool m_hasPendingStreamingCamera{false};
+    bool m_hasPendingGenerationDistance{false};
     std::shared_ptr<WorldChunkDatabase> m_chunkDatabase;
     bool m_initialised{false};
     bool m_hasStreamingCamera{false};
@@ -114,7 +147,6 @@ private:
     std::deque<ChunkCoord> m_pendingRequests;
     std::vector<ChunkJob> m_inFlightJobs;
     std::unordered_map<ChunkKey, ChunkRecord> m_chunkRecords;
-    std::unordered_map<ChunkKey, std::shared_ptr<const TerrainHeightmapTile>> m_heightmapTiles;
     std::unordered_map<ChunkKey, WorldChunkRenderData> m_renderChunkData;
     std::unordered_set<ChunkKey> m_solidOccluderKeys;
     WorldSpatialHashGrid m_residentChunks;

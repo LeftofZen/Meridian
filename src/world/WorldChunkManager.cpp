@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <system_error>
 
 #include <tracy/Tracy.hpp>
 
@@ -288,14 +289,33 @@ bool WorldChunkManager::init()
         return false;
     }
 
-    std::shared_ptr<WorldChunkDatabase> chunkDatabase = std::make_shared<WorldChunkDatabase>();
-    if (chunkDatabase->init(worldChunkDatabasePath())) {
-        m_chunkDatabase = std::move(chunkDatabase);
-    } else {
-        MRD_WARN("World chunk database unavailable; falling back to procedural generation only");
+    std::promise<bool> initPromise;
+    std::future<bool> initFuture = initPromise.get_future();
+
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_stopWorker = false;
+        m_updateRequested = false;
+        m_rebuildRequested = false;
+        m_hasPendingStreamingCamera = false;
+        m_hasPendingGenerationDistance = false;
     }
 
-    m_initialised = true;
+    try {
+        m_workerThread = std::thread(&WorldChunkManager::workerMain, this, std::move(initPromise));
+    } catch (const std::system_error& error) {
+        MRD_ERROR("WorldChunkManager init failed: could not start worker thread: {}", error.what());
+        return false;
+    }
+
+    m_initialised = initFuture.get();
+    if (!m_initialised) {
+        if (m_workerThread.joinable()) {
+            m_workerThread.join();
+        }
+        return false;
+    }
+
     MRD_INFO("WorldChunkManager initialized (chunk resolution: {}^3 voxels)",
         kWorldChunkResolution);
     return true;
@@ -307,17 +327,16 @@ void WorldChunkManager::shutdown()
         return;
     }
 
-    persistResidentChunks();
-    m_pendingRequests.clear();
-    m_inFlightJobs.clear();
-    m_chunkRecords.clear();
-    m_heightmapTiles.clear();
-    m_renderChunkData.clear();
-    m_solidOccluderKeys.clear();
-    m_residentChunks.clear();
-    m_chunkDatabase.reset();
-    ++m_renderRevision;
     m_initialised = false;
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_stopWorker = true;
+        m_updateRequested = true;
+    }
+    m_commandCondition.notify_one();
+    if (m_workerThread.joinable()) {
+        m_workerThread.join();
+    }
     MRD_INFO("WorldChunkManager shutting down");
 }
 
@@ -327,56 +346,41 @@ void WorldChunkManager::update(float /*deltaTimeSeconds*/)
         return;
     }
 
-    ZoneScopedN("WorldChunkManager::update");
-    if (m_hasStreamingCamera) {
-        pruneChunksOutsideRetention();
-        queueChunksAroundFocus();
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_updateRequested = true;
     }
-
-    dispatchChunkJobs();
-    collectCompletedJobs();
+    m_commandCondition.notify_one();
 }
 
 std::size_t WorldChunkManager::getResidentChunkCount() const noexcept
 {
-    return m_residentChunks.size();
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.residentChunkCount;
 }
 
 std::size_t WorldChunkManager::getInFlightChunkCount() const noexcept
 {
-    return m_inFlightJobs.size();
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.inFlightChunkCount;
 }
 
 std::size_t WorldChunkManager::getPendingChunkCount() const noexcept
 {
-    return m_pendingRequests.size();
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.pendingChunkCount;
+}
+
+std::uint64_t WorldChunkManager::renderRevision() const noexcept
+{
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.renderRevision;
 }
 
 std::vector<WorldChunkRenderData> WorldChunkManager::buildRenderData() const
 {
-    ZoneScopedN("WorldChunkManager::buildRenderData");
-    std::vector<WorldChunkRenderData> renderData;
-    renderData.reserve(m_renderChunkData.size());
-
-    for (const auto& [key, chunkData] : m_renderChunkData) {
-        (void)key;
-        renderData.push_back(chunkData);
-    }
-
-    std::sort(
-        renderData.begin(),
-        renderData.end(),
-        [](const WorldChunkRenderData& left, const WorldChunkRenderData& right) {
-            if (left.coord.y != right.coord.y) {
-                return left.coord.y < right.coord.y;
-            }
-            if (left.coord.z != right.coord.z) {
-                return left.coord.z < right.coord.z;
-            }
-            return left.coord.x < right.coord.x;
-        });
-
-    return renderData;
+    std::scoped_lock lock(m_snapshotMutex);
+    return m_snapshot.renderData;
 }
 
 void WorldChunkManager::cacheResidentChunkRenderData(const WorldChunkStorage& chunkStorage)
@@ -415,6 +419,20 @@ WorldChunkRenderData WorldChunkManager::createRenderData(const WorldChunkStorage
 
 void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState) noexcept
 {
+    if (!m_initialised) {
+        return;
+    }
+
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_pendingStreamingCameraState = cameraState;
+        m_hasPendingStreamingCamera = true;
+    }
+    m_commandCondition.notify_one();
+}
+
+void WorldChunkManager::setStreamingCameraWorker(const CameraRenderState& cameraState) noexcept
+{
     m_streamingCameraState = cameraState;
     m_streamingFocusChunk = ChunkCoord{
         .x = worldToChunkCoord(cameraState.position[0]),
@@ -426,7 +444,160 @@ void WorldChunkManager::setStreamingCamera(const CameraRenderState& cameraState)
 
 void WorldChunkManager::setChunkGenerationDistanceChunks(float generationDistanceChunks) noexcept
 {
+    if (!m_initialised) {
+        return;
+    }
+
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_pendingGenerationDistanceChunks = generationDistanceChunks;
+        m_hasPendingGenerationDistance = true;
+    }
+    m_commandCondition.notify_one();
+}
+
+void WorldChunkManager::setChunkGenerationDistanceChunksWorker(float generationDistanceChunks) noexcept
+{
     m_generationDistanceChunks = std::clamp(generationDistanceChunks, 1.0F, 32.0F);
+}
+
+void WorldChunkManager::workerMain(std::promise<bool> initResult)
+{
+    tracy::SetThreadName("Chunk Manager Worker");
+
+    std::shared_ptr<WorldChunkDatabase> chunkDatabase = std::make_shared<WorldChunkDatabase>();
+    if (chunkDatabase->init(worldChunkDatabasePath())) {
+        m_chunkDatabase = std::move(chunkDatabase);
+    } else {
+        MRD_WARN("World chunk database unavailable; falling back to procedural generation only");
+    }
+
+    publishSnapshot();
+    initResult.set_value(true);
+
+    for (;;) {
+        bool stopRequested = false;
+        bool updateRequested = false;
+        bool rebuildRequested = false;
+        bool hasPendingStreamingCamera = false;
+        bool hasPendingGenerationDistance = false;
+        CameraRenderState pendingStreamingCameraState{};
+        float pendingGenerationDistanceChunks = kDefaultGenerationDistanceChunks;
+
+        {
+            std::unique_lock lock(m_commandMutex);
+            const auto waitDuration =
+                m_inFlightJobs.empty() ? std::chrono::milliseconds(16) : std::chrono::milliseconds(1);
+            m_commandCondition.wait_for(lock, waitDuration, [this]() {
+                return m_stopWorker ||
+                    m_updateRequested ||
+                    m_rebuildRequested ||
+                    m_hasPendingStreamingCamera ||
+                    m_hasPendingGenerationDistance;
+            });
+
+            stopRequested = m_stopWorker;
+            updateRequested = m_updateRequested;
+            m_updateRequested = false;
+            rebuildRequested = m_rebuildRequested;
+            m_rebuildRequested = false;
+            hasPendingStreamingCamera = m_hasPendingStreamingCamera;
+            if (hasPendingStreamingCamera) {
+                pendingStreamingCameraState = m_pendingStreamingCameraState;
+                m_hasPendingStreamingCamera = false;
+            }
+            hasPendingGenerationDistance = m_hasPendingGenerationDistance;
+            if (hasPendingGenerationDistance) {
+                pendingGenerationDistanceChunks = m_pendingGenerationDistanceChunks;
+                m_hasPendingGenerationDistance = false;
+            }
+        }
+
+        if (hasPendingGenerationDistance) {
+            setChunkGenerationDistanceChunksWorker(pendingGenerationDistanceChunks);
+        }
+        if (hasPendingStreamingCamera) {
+            setStreamingCameraWorker(pendingStreamingCameraState);
+        }
+        if (rebuildRequested) {
+            rebuildActiveTerrainWorker();
+        }
+        if (updateRequested || !m_inFlightJobs.empty()) {
+            updateWorker();
+        }
+        publishSnapshot();
+
+        if (stopRequested) {
+            break;
+        }
+    }
+
+    persistResidentChunks();
+    drainInFlightJobs();
+    m_pendingRequests.clear();
+    m_inFlightJobs.clear();
+    m_chunkRecords.clear();
+    m_renderChunkData.clear();
+    m_solidOccluderKeys.clear();
+    m_residentChunks.clear();
+    m_chunkDatabase.reset();
+    ++m_renderRevision;
+    publishSnapshot();
+}
+
+void WorldChunkManager::updateWorker()
+{
+    ZoneScopedN("WorldChunkManager::updateWorker");
+    if (m_hasStreamingCamera) {
+        pruneChunksOutsideRetention();
+        queueChunksAroundFocus();
+    }
+
+    dispatchChunkJobs();
+    collectCompletedJobs();
+}
+
+void WorldChunkManager::publishSnapshot()
+{
+    Snapshot snapshot{
+        .residentChunkCount = m_residentChunks.size(),
+        .inFlightChunkCount = m_inFlightJobs.size(),
+        .pendingChunkCount = m_pendingRequests.size(),
+        .renderRevision = m_renderRevision,
+    };
+
+    bool rebuildRenderData = true;
+    {
+        std::scoped_lock lock(m_snapshotMutex);
+        if (m_snapshot.renderRevision == m_renderRevision) {
+            snapshot.renderData = m_snapshot.renderData;
+            rebuildRenderData = false;
+        }
+    }
+
+    if (rebuildRenderData) {
+        snapshot.renderData.reserve(m_renderChunkData.size());
+        for (const auto& [key, chunkData] : m_renderChunkData) {
+            (void)key;
+            snapshot.renderData.push_back(chunkData);
+        }
+
+        std::sort(
+            snapshot.renderData.begin(),
+            snapshot.renderData.end(),
+            [](const WorldChunkRenderData& left, const WorldChunkRenderData& right) {
+                if (left.coord.y != right.coord.y) {
+                    return left.coord.y < right.coord.y;
+                }
+                if (left.coord.z != right.coord.z) {
+                    return left.coord.z < right.coord.z;
+                }
+                return left.coord.x < right.coord.x;
+            });
+    }
+
+    std::scoped_lock lock(m_snapshotMutex);
+    m_snapshot = std::move(snapshot);
 }
 
 int WorldChunkManager::generationRadiusXZ() const noexcept
@@ -539,7 +710,6 @@ void WorldChunkManager::pruneChunksOutsideRetention()
 {
     ZoneScopedN("WorldChunkManager::pruneChunksOutsideRetention");
     bool removedResidentChunk = false;
-    const int radiusXZ = retentionRadiusXZ();
 
     for (auto it = m_residentChunks.chunks().begin(); it != m_residentChunks.chunks().end();) {
         const WorldChunkStorage& chunkStorage = it->second;
@@ -580,18 +750,6 @@ void WorldChunkManager::pruneChunksOutsideRetention()
             }),
         m_pendingRequests.end());
 
-    for (auto tileIt = m_heightmapTiles.begin(); tileIt != m_heightmapTiles.end();) {
-        const ChunkCoord coord = tileIt->second->coord;
-        const bool withinRetention =
-            std::abs(coord.x - m_streamingFocusChunk.x) <= radiusXZ &&
-            std::abs(coord.z - m_streamingFocusChunk.z) <= radiusXZ;
-        if (withinRetention) {
-            ++tileIt;
-            continue;
-        }
-
-        tileIt = m_heightmapTiles.erase(tileIt);
-    }
 }
 
 void WorldChunkManager::requestChunk(ChunkCoord coord)
@@ -621,11 +779,25 @@ void WorldChunkManager::requestChunk(ChunkCoord coord)
 
 void WorldChunkManager::rebuildActiveTerrain()
 {
-    ZoneScopedN("WorldChunkManager::rebuildActiveTerrain");
+    if (!m_initialised) {
+        return;
+    }
+
+    {
+        std::scoped_lock lock(m_commandMutex);
+        m_rebuildRequested = true;
+        m_updateRequested = true;
+    }
+    m_commandCondition.notify_one();
+}
+
+void WorldChunkManager::rebuildActiveTerrainWorker()
+{
+    ZoneScopedN("WorldChunkManager::rebuildActiveTerrainWorker");
+    drainInFlightJobs();
     m_pendingRequests.clear();
     m_inFlightJobs.clear();
     m_chunkRecords.clear();
-    m_heightmapTiles.clear();
     m_renderChunkData.clear();
     m_solidOccluderKeys.clear();
     m_residentChunks.clear();
@@ -659,68 +831,67 @@ void WorldChunkManager::dispatchChunkJobs()
         const TerrainHeightmapSettings heightmapSettings =
             m_heightmapGenerator != nullptr ? m_heightmapGenerator->settings() : TerrainHeightmapSettings{};
         const std::uint64_t settingsSignature = terrainSettingsSignature(heightmapSettings);
-        if (m_chunkDatabase != nullptr) {
-            ZoneScopedN("WorldChunkManager::tryLoadCachedChunk");
-            if (std::optional<WorldChunkStorage> cachedChunk =
-                    m_chunkDatabase->loadChunk(coord, key, settingsSignature);
-                cachedChunk.has_value()) {
-                chunkIt->second.status = ChunkStatus::Resident;
-                m_residentChunks.upsert(std::move(*cachedChunk));
-                if (const WorldChunkStorage* residentChunk = m_residentChunks.find(key);
-                    residentChunk != nullptr) {
-                    cacheResidentChunkRenderData(*residentChunk);
-                }
-                ++m_renderRevision;
-
-                if (const WorldChunkStorage* residentChunk = m_residentChunks.find(key);
-                    residentChunk != nullptr) {
-                    logResidentChunk(*residentChunk, getResidentChunkCount(), true);
-                }
-                continue;
-            }
-        }
-
-        if (!shouldGenerateChunk(coord)) {
-            chunkIt->second.status = ChunkStatus::DeferredGeneration;
-            continue;
-        }
-
         chunkIt->second.status = ChunkStatus::Generating;
-
-        std::shared_ptr<const TerrainHeightmapTile> heightmapTile;
-        if (m_heightmapGenerator != nullptr) {
-            ZoneScopedN("WorldChunkManager::prepareHeightmapTile");
-            const ChunkKey tileKey = heightmapTileKey(coord);
-            auto tileIt = m_heightmapTiles.find(tileKey);
-            if (tileIt == m_heightmapTiles.end()) {
-                tileIt = m_heightmapTiles.emplace(
-                    tileKey,
-                    std::make_shared<TerrainHeightmapTile>(
-                        m_heightmapGenerator->generateTile(coord))).first;
-            }
-
-            heightmapTile = tileIt->second;
-        }
+        const bool allowGeneration = shouldGenerateChunk(coord);
 
         m_inFlightJobs.push_back(ChunkJob{
             .coord = coord,
             .key = key,
             .future = m_tasks.async([
                 coord,
-                heightmapTile,
+                key,
+                allowGeneration,
+                heightmapGenerator = m_heightmapGenerator,
                 heightmapSettings,
                 settingsSignature,
                 chunkDatabase = m_chunkDatabase]() {
                 ZoneScopedN("WorldChunkManager Chunk Job");
-                GeneratedChunk generatedChunk =
+
+                if (chunkDatabase != nullptr) {
+                    ZoneScopedN("WorldChunkManager::tryLoadCachedChunkAsync");
+                    if (std::optional<WorldChunkStorage> cachedChunk =
+                            chunkDatabase->loadChunk(coord, key, settingsSignature);
+                        cachedChunk.has_value()) {
+                        return std::optional<ChunkJobResult>{ChunkJobResult{
+                            .chunkStorage = std::move(*cachedChunk),
+                            .loadedFromDatabase = true,
+                        }};
+                    }
+                }
+
+                if (!allowGeneration) {
+                    return std::optional<ChunkJobResult>{};
+                }
+
+                std::shared_ptr<const TerrainHeightmapTile> heightmapTile;
+                if (heightmapGenerator != nullptr) {
+                    ZoneScopedN("WorldChunkManager::generateHeightmapTile");
+                    heightmapTile = heightmapGenerator->generateTile(coord);
+                }
+
+                ChunkJobResult generatedChunk =
                     WorldChunkManager::generateChunk(coord, heightmapTile, heightmapSettings);
                 if (chunkDatabase != nullptr) {
                     ZoneScopedN("WorldChunkManager::storeGeneratedChunk");
                     (void)chunkDatabase->storeChunk(generatedChunk.chunkStorage, settingsSignature);
                 }
-                return generatedChunk;
+                return std::optional<ChunkJobResult>{std::move(generatedChunk)};
             }),
         });
+    }
+}
+
+void WorldChunkManager::drainInFlightJobs()
+{
+    ZoneScopedN("WorldChunkManager::drainInFlightJobs");
+
+    for (ChunkJob& job : m_inFlightJobs) {
+        if (!job.future.valid()) {
+            continue;
+        }
+
+        job.future.wait();
+        job.future.get();
     }
 }
 
@@ -738,7 +909,7 @@ void WorldChunkManager::collectCompletedJobs()
                 return false;
             }
 
-            GeneratedChunk generatedChunk = job.future.get();
+            std::optional<ChunkJobResult> jobResult = job.future.get();
             auto chunkIt = m_chunkRecords.find(job.key);
             if (chunkIt == m_chunkRecords.end()) {
                 return true;
@@ -749,9 +920,14 @@ void WorldChunkManager::collectCompletedJobs()
                 return true;
             }
 
+            if (!jobResult.has_value()) {
+                chunkIt->second.status = ChunkStatus::DeferredGeneration;
+                return true;
+            }
+
             ChunkRecord& record = chunkIt->second;
             record.status = ChunkStatus::Resident;
-            m_residentChunks.upsert(std::move(generatedChunk.chunkStorage));
+            m_residentChunks.upsert(std::move(jobResult->chunkStorage));
             if (const WorldChunkStorage* residentChunk = m_residentChunks.find(job.key);
                 residentChunk != nullptr) {
                 cacheResidentChunkRenderData(*residentChunk);
@@ -763,14 +939,14 @@ void WorldChunkManager::collectCompletedJobs()
                 return true;
             }
 
-            logResidentChunk(*residentChunk, getResidentChunkCount(), false);
+            logResidentChunk(*residentChunk, m_residentChunks.size(), jobResult->loadedFromDatabase);
             return true;
         });
 
     m_inFlightJobs.erase(nextJob, m_inFlightJobs.end());
 }
 
-WorldChunkManager::GeneratedChunk WorldChunkManager::generateChunk(
+WorldChunkManager::ChunkJobResult WorldChunkManager::generateChunk(
     ChunkCoord coord,
     std::shared_ptr<const TerrainHeightmapTile> heightmapTile,
     TerrainHeightmapSettings heightmapSettings)
@@ -786,13 +962,14 @@ WorldChunkManager::GeneratedChunk WorldChunkManager::generateChunk(
         octree = SparseVoxelOctree::build(voxels, kWorldChunkResolution);
     }
 
-    return GeneratedChunk{
+    return ChunkJobResult{
         .chunkStorage = WorldChunkStorage(
             coord,
             key,
             kWorldChunkResolution,
             std::move(voxels),
             std::move(octree)),
+        .loadedFromDatabase = false,
     };
 }
 

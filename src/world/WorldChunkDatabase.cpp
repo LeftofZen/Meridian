@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <system_error>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -271,13 +273,39 @@ bool WorldChunkDatabase::init(const std::filesystem::path& databasePath)
     }
 
     m_initialised = true;
+
+    try {
+        m_stopWorker = false;
+        m_workerThread = std::thread(&WorldChunkDatabase::databaseWorkerMain, this);
+    } catch (const std::system_error& error) {
+        shutdown();
+        MRD_ERROR("Failed to start world chunk database worker thread: {}", error.what());
+        return false;
+    }
+
     MRD_INFO("World chunk database initialised at '{}'", databasePathString);
     return true;
 }
 
 void WorldChunkDatabase::shutdown() noexcept
 {
+    std::thread workerThread;
+    {
+        std::scoped_lock lock(m_mutex);
+        m_stopWorker = true;
+        if (m_workerThread.joinable()) {
+            workerThread = std::move(m_workerThread);
+        }
+    }
+
+    m_workerCondition.notify_one();
+    if (workerThread.joinable()) {
+        workerThread.join();
+    }
+
     std::scoped_lock lock(m_mutex);
+    m_pendingWrites.clear();
+    m_pendingWriteLookup.clear();
     if (m_env != nullptr) {
         if (m_initialised) {
             mdb_dbi_close(m_env, m_chunkDatabaseHandle);
@@ -287,6 +315,8 @@ void WorldChunkDatabase::shutdown() noexcept
     }
 
     m_chunkDatabaseHandle = 0;
+    m_nextPendingWriteSequence = 0;
+    m_stopWorker = false;
     m_initialised = false;
 }
 
@@ -303,6 +333,15 @@ std::optional<WorldChunkStorage> WorldChunkDatabase::loadChunk(
         std::scoped_lock lock(m_mutex);
         if (!isInitialised()) {
             return std::nullopt;
+        }
+
+        if (const auto pendingWrite = m_pendingWriteLookup.find(key);
+            pendingWrite != m_pendingWriteLookup.end() &&
+            pendingWrite->second->terrainSettingsSignature == terrainSettingsSignature &&
+            pendingWrite->second->chunkStorage.coord().x == coord.x &&
+            pendingWrite->second->chunkStorage.coord().y == coord.y &&
+            pendingWrite->second->chunkStorage.coord().z == coord.z) {
+            return pendingWrite->second->chunkStorage;
         }
 
         MDB_txn* transaction = nullptr;
@@ -348,9 +387,68 @@ bool WorldChunkDatabase::storeChunk(
     const WorldChunkStorage& chunkStorage,
     std::uint64_t terrainSettingsSignature)
 {
-    ZoneScopedN("WorldChunkDatabase::storeChunk");
+    ZoneScopedN("WorldChunkDatabase::enqueueChunkStore");
 
-    // Serialise and compress outside the mutex — these can be expensive.
+    auto pendingWrite = std::make_shared<PendingChunkWrite>(PendingChunkWrite{
+        .chunkStorage = chunkStorage,
+        .terrainSettingsSignature = terrainSettingsSignature,
+    });
+
+    {
+        std::scoped_lock lock(m_mutex);
+        if (!isInitialised() || m_stopWorker) {
+            return false;
+        }
+
+        pendingWrite->sequence = ++m_nextPendingWriteSequence;
+        m_pendingWrites.push_back(pendingWrite);
+        m_pendingWriteLookup.insert_or_assign(chunkStorage.key(), pendingWrite);
+    }
+
+    m_workerCondition.notify_one();
+    return true;
+}
+
+void WorldChunkDatabase::databaseWorkerMain()
+{
+    ZoneScopedN("WorldChunkDatabase::databaseWorkerMain");
+    tracy::SetThreadName("Chunk DB Worker");
+
+    for (;;) {
+        std::shared_ptr<PendingChunkWrite> pendingWrite;
+        {
+            std::unique_lock lock(m_mutex);
+            m_workerCondition.wait(lock, [this]() {
+                return m_stopWorker || !m_pendingWrites.empty();
+            });
+
+            if (m_pendingWrites.empty()) {
+                if (m_stopWorker) {
+                    return;
+                }
+                continue;
+            }
+
+            pendingWrite = std::move(m_pendingWrites.front());
+            m_pendingWrites.pop_front();
+        }
+
+        (void)storeChunkNow(pendingWrite->chunkStorage, pendingWrite->terrainSettingsSignature);
+
+        std::scoped_lock lock(m_mutex);
+        auto pendingLookup = m_pendingWriteLookup.find(pendingWrite->chunkStorage.key());
+        if (pendingLookup != m_pendingWriteLookup.end() && pendingLookup->second.get() == pendingWrite.get()) {
+            m_pendingWriteLookup.erase(pendingLookup);
+        }
+    }
+}
+
+bool WorldChunkDatabase::storeChunkNow(
+    const WorldChunkStorage& chunkStorage,
+    std::uint64_t terrainSettingsSignature)
+{
+    ZoneScopedN("WorldChunkDatabase::storeChunkNow");
+
     const std::vector<std::uint8_t> serialisedChunk =
         serialiseChunk(chunkStorage, terrainSettingsSignature);
     const std::optional<std::vector<std::uint8_t>> compressedChunk =

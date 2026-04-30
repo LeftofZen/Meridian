@@ -127,7 +127,7 @@ void TerrainHeightmapGenerator::shutdown() noexcept
     m_context = nullptr;
 }
 
-TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
+std::shared_ptr<TerrainHeightmapTile> TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
 {
     ZoneScopedN("TerrainHeightmapGenerator::generateTile");
     std::scoped_lock lock(m_mutex);
@@ -141,7 +141,7 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
 
     ZoneText("cache-miss", 10);
 
-    TerrainHeightmapTile tile{
+    std::shared_ptr<TerrainHeightmapTile> tile = std::make_shared<TerrainHeightmapTile>(TerrainHeightmapTile{
         .coord = tileCoord,
         .resolution = m_settings.tileResolution,
         .grayscale = std::vector<float>(
@@ -159,7 +159,7 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
             static_cast<std::size_t>(m_settings.tileResolution) *
             m_settings.tileResolution,
             0.0F),
-    };
+    });
 
     if (m_context == nullptr || m_pipeline == VK_NULL_HANDLE || m_commandBuffer == VK_NULL_HANDLE) {
         return tile;
@@ -312,11 +312,11 @@ TerrainHeightmapTile TerrainHeightmapGenerator::generateTile(ChunkCoord coord)
     {
         ZoneScopedN("TerrainHeightmapGenerator::readbackTile");
         const auto* outputSamples = static_cast<const TerrainOutputSample*>(mappedData);
-        for (std::size_t sampleIndex = 0; sampleIndex < tile.grayscale.size(); ++sampleIndex) {
-            tile.grayscale[sampleIndex] = outputSamples[sampleIndex].height;
-            tile.ridgeMap[sampleIndex] = outputSamples[sampleIndex].ridgeMap;
-            tile.erosion[sampleIndex] = outputSamples[sampleIndex].erosion;
-            tile.treeCoverage[sampleIndex] = outputSamples[sampleIndex].treeCoverage;
+        for (std::size_t sampleIndex = 0; sampleIndex < tile->grayscale.size(); ++sampleIndex) {
+            tile->grayscale[sampleIndex] = outputSamples[sampleIndex].height;
+            tile->ridgeMap[sampleIndex] = outputSamples[sampleIndex].ridgeMap;
+            tile->erosion[sampleIndex] = outputSamples[sampleIndex].erosion;
+            tile->treeCoverage[sampleIndex] = outputSamples[sampleIndex].treeCoverage;
         }
     }
     vkUnmapMemory(device, m_outputBuffer.memory);

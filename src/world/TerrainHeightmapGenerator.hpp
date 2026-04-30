@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -74,7 +75,7 @@ public:
     [[nodiscard]] bool init(VulkanContext& context);
     void shutdown() noexcept;
 
-    [[nodiscard]] TerrainHeightmapTile generateTile(ChunkCoord coord);
+    [[nodiscard]] std::shared_ptr<TerrainHeightmapTile> generateTile(ChunkCoord coord);
     [[nodiscard]] TerrainHeightmapSettings settings() const;
     void setSettings(const TerrainHeightmapSettings& settings);
     void invalidateCache() noexcept;
@@ -130,7 +131,7 @@ private:
     VkFence m_computeFence{VK_NULL_HANDLE};
     GpuBuffer m_outputBuffer;
     mutable std::mutex m_mutex;
-    std::unordered_map<ChunkKey, TerrainHeightmapTile> m_tileCache;
+    std::unordered_map<ChunkKey, std::shared_ptr<TerrainHeightmapTile>> m_tileCache;
 };
 
 } // namespace Meridian

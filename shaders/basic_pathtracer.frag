@@ -127,11 +127,12 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
     const float radius = sqrt(u1);
     const float theta = 6.28318530718 * u2;
 
-    const vec3 tangent =
-        abs(normal.y) > 0.5
-            ? vec3(1.0, 0.0, 0.0)
-            : vec3(0.0, 1.0, 0.0);
-    const vec3 bitangent = cross(normal, tangent);
+    const vec3 tangent = normalize(cross(
+        abs(normal.y) > 0.999
+            ? vec3(0.0, 0.0, 1.0)
+            : vec3(0.0, 1.0, 0.0),
+        normal));
+    const vec3 bitangent = normalize(cross(normal, tangent));
 
     const vec3 localDirection = vec3(
         radius * cos(theta),
@@ -142,6 +143,32 @@ vec3 sampleCosineHemisphere(vec3 normal, inout uint rngState)
         tangent * localDirection.x +
         normal * localDirection.y +
         bitangent * localDirection.z;
+}
+
+float directLightingSampleProbability(uint bounce)
+{
+    if (bounce == 0u) {
+        return 1.0;
+    }
+
+    if (bounce == 1u) {
+        return 0.5;
+    }
+
+    return 0.25;
+}
+
+vec3 lambertianBrdf(vec3 albedo)
+{
+    return albedo * kInvPi;
+}
+
+float powerHeuristic(float pdfA, float pdfB)
+{
+    const float a2 = pdfA * pdfA;
+    const float b2 = pdfB * pdfB;
+    const float sum = a2 + b2;
+    return sum > 0.0 ? a2 / sum : 0.0;
 }
 
 vec3 sunDirection()
@@ -495,14 +522,12 @@ float renderSunDiscMask(vec3 viewDirection, vec3 sunDirectionValue, float angula
     return smoothstep(outerEdge, innerEdge, angleDot);
 }
 
-vec3 renderAtmosphereSunDisc(vec3 origin, vec3 viewDirection)
+vec3 renderAtmosphereSunDisc(vec3 viewDirection, vec3 transmittance)
 {
     if (!atmosphereEnabled()) {
         return vec3(0.0);
     }
 
-    vec3 transmittance = vec3(1.0);
-    marchAtmosphereScattering(origin, viewDirection, kFarDistance, sunColor() * sunIntensity(), transmittance);
     float sunMask = renderSunDiscMask(viewDirection, sunDirection(), atmosphereSunDiscAngularSize());
     return sunColor() * sunIntensity() * transmittance * sunMask * atmosphereSunDiscBrightness();
 }
@@ -592,6 +617,51 @@ uint nodeMaterialId(uint nodeIndex)
 uint nodeChildIndex(uint nodeIndex, uint childIndex)
 {
     return nodeWord(nodeIndex, childIndex);
+}
+
+float lodFactor()
+{
+    return max(pc.cameraPosition.w, 0.0);
+}
+
+// Walks down the first occupied child of an interior node until a leaf is found
+// and returns its material albedo. Used when distance-based LOD stops further
+// descent at an occupied interior node.
+vec3 approximateNodeAlbedo(uint nodeIndex, uint chunkBaseIndex)
+{
+    uint current = nodeIndex;
+    for (int depth = 0; depth < kMaxOctreeStackEntries; ++depth) {
+        if (nodeIsLeaf(current)) {
+            return materialAlbedo(nodeMaterialId(current));
+        }
+
+        const uint mask = nodeChildMask(current);
+        if (mask == 0u) {
+            break;
+        }
+
+        bool descended = false;
+        for (uint childIndex = 0u; childIndex < 8u; ++childIndex) {
+            if ((mask & (1u << childIndex)) == 0u) {
+                continue;
+            }
+
+            const uint childNodeIndex = nodeChildIndex(current, childIndex);
+            if (childNodeIndex == kInvalidChildIndex) {
+                continue;
+            }
+
+            current = chunkBaseIndex + childNodeIndex;
+            descended = true;
+            break;
+        }
+
+        if (!descended) {
+            break;
+        }
+    }
+
+    return vec3(0.5);
 }
 
 int floorDivInt(int value, int divisor)
@@ -692,16 +762,26 @@ bool traverseChunkOctree(Ray ray, GpuChunk chunk, float tMin, float tMax, out Hi
         const float nodeExit = exitStack[stackSize];
         const vec3 nodeNormal = normalStack[stackSize];
 
-        if (nodeIsLeaf(nodeIndex)) {
+        const bool isLeaf = nodeIsLeaf(nodeIndex);
+        const vec3 nodeCenter = nodeMin + vec3(nodeExtent * 0.5);
+        const vec3 cameraToNode = nodeCenter - pc.cameraPosition.xyz;
+        const float cameraToNodeDistanceSquared = dot(cameraToNode, cameraToNode);
+        const float childExtent = nodeExtent * 0.5;
+        const float lodThreshold = lodFactor() * lodFactor() * cameraToNodeDistanceSquared;
+        const bool stopAtCurrentNode =
+            !isLeaf && lodFactor() > 0.0 && childExtent * childExtent < lodThreshold;
+
+        if (isLeaf || stopAtCurrentNode) {
             hit.found = true;
             hit.t = nodeEnter;
             hit.position = ray.origin + ray.direction * nodeEnter;
             hit.normal = nodeNormal;
-            hit.albedo = materialAlbedo(nodeMaterialId(nodeIndex));
+            hit.albedo = isLeaf
+                ? materialAlbedo(nodeMaterialId(nodeIndex))
+                : approximateNodeAlbedo(nodeIndex, chunk.octreeData.x);
             return true;
         }
 
-        const float childExtent = nodeExtent * 0.5;
         uint childNodeIndices[8];
         vec3 childMins[8];
         float childEnters[8];
@@ -851,31 +931,16 @@ bool sceneIntersect(Ray ray, out Hit hit)
             }
         }
 
-        if (tMax.x < tMax.y) {
-            if (tMax.x < tMax.z) {
-                chunkCoord.x += stepDir.x;
-                currentT = tMax.x;
-                tMax.x += tDelta.x;
-                currentNormal = vec3(float(-stepDir.x), 0.0, 0.0);
-            } else {
-                chunkCoord.z += stepDir.z;
-                currentT = tMax.z;
-                tMax.z += tDelta.z;
-                currentNormal = vec3(0.0, 0.0, float(-stepDir.z));
-            }
-        } else {
-            if (tMax.y < tMax.z) {
-                chunkCoord.y += stepDir.y;
-                currentT = tMax.y;
-                tMax.y += tDelta.y;
-                currentNormal = vec3(0.0, float(-stepDir.y), 0.0);
-            } else {
-                chunkCoord.z += stepDir.z;
-                currentT = tMax.z;
-                tMax.z += tDelta.z;
-                currentNormal = vec3(0.0, 0.0, float(-stepDir.z));
-            }
-        }
+        // Preserve the previous tie-break behavior while avoiding control-flow branches.
+        const vec3 stepMask = vec3(
+            bvec3(
+                tMax.x < tMax.y && tMax.x < tMax.z,
+                tMax.y <= tMax.x && tMax.y < tMax.z,
+                tMax.z <= tMax.x && tMax.z <= tMax.y));
+        currentT = dot(tMax, stepMask);
+        tMax += stepMask * tDelta;
+        chunkCoord += ivec3(stepMask) * stepDir;
+        currentNormal = -vec3(stepDir) * stepMask;
     }
 
     return false;
@@ -893,6 +958,52 @@ bool isShadowed(vec3 origin, vec3 direction, float maxDistance)
     }
 
     return shadowHit.t < maxDistance - kRayEpsilon * 2.0;
+}
+
+bool intersectAreaLight(vec3 origin, vec3 direction, GpuAreaLight light, out float tHit)
+{
+    tHit = 0.0;
+    const vec3 rightExtent = light.rightExtentAndDoubleSided.xyz;
+    const vec3 upExtent = light.upExtent.xyz;
+    const vec3 normalUnscaled = cross(rightExtent, upExtent);
+    const float normalLen = length(normalUnscaled);
+    if (normalLen <= 0.0) {
+        return false;
+    }
+    const vec3 normal = normalUnscaled / normalLen;
+
+    const float denom = dot(normal, direction);
+    if (abs(denom) < 1e-7) {
+        return false;
+    }
+
+    const bool doubleSided = light.rightExtentAndDoubleSided.w >= 0.5;
+    if (!doubleSided && denom >= 0.0) {
+        return false;
+    }
+
+    const vec3 toCenter = light.centerAndIntensity.xyz - origin;
+    const float t = dot(toCenter, normal) / denom;
+    if (t <= kRayEpsilon) {
+        return false;
+    }
+
+    const vec3 hitPoint = origin + direction * t;
+    const vec3 toHit = hitPoint - light.centerAndIntensity.xyz;
+    const float r2 = dot(rightExtent, rightExtent);
+    const float u2 = dot(upExtent, upExtent);
+    if (r2 < 1e-12 || u2 < 1e-12) {
+        return false;
+    }
+
+    const float dotR = dot(toHit, rightExtent) / r2;
+    const float dotU = dot(toHit, upExtent) / u2;
+    if (abs(dotR) > 1.0 || abs(dotU) > 1.0) {
+        return false;
+    }
+
+    tHit = t;
+    return true;
 }
 
 vec3 evaluateSunLight(Hit hit)
@@ -952,7 +1063,16 @@ vec3 evaluatePointLight(Hit hit, GpuPointLight light)
     return light.colorAndIntensity.xyz * light.colorAndIntensity.w * rangeFade * ndotl / max(distanceSquared, 1.0);
 }
 
-vec3 evaluateAreaLight(Hit hit, GpuAreaLight light, inout uint rngState)
+// Area-light NEE with multiple importance sampling (power heuristic).
+// Returns the full estimator value: brdf * emission * cos_surf / pdf_light * misWeight,
+// where pdf_light is the solid-angle pdf of the full light strategy (uniform light
+// selection times uniform area sampling). The caller does NOT multiply by areaCount.
+vec3 evaluateAreaLightMIS(
+    Hit hit,
+    GpuAreaLight light,
+    uint areaCount,
+    vec3 brdf,
+    inout uint rngState)
 {
     const float sampleU = randomFloat(rngState) * 2.0 - 1.0;
     const float sampleV = randomFloat(rngState) * 2.0 - 1.0;
@@ -980,7 +1100,6 @@ vec3 evaluateAreaLight(Hit hit, GpuAreaLight light, inout uint rngState)
     if (light.rightExtentAndDoubleSided.w >= 0.5) {
         lightCosine = abs(lightCosine);
     }
-
     if (lightCosine <= 0.0) {
         return vec3(0.0);
     }
@@ -990,49 +1109,159 @@ vec3 evaluateAreaLight(Hit hit, GpuAreaLight light, inout uint rngState)
     }
 
     const float lightArea = 4.0 * length(cross(rightExtent, upExtent));
-    return light.color.xyz * light.centerAndIntensity.w * lightArea * surfaceCosine * lightCosine / max(distanceSquared, 1.0);
+
+    // Solid-angle pdfs for both sampling strategies.
+    const float pdfLight = distanceSquared / (lightArea * lightCosine * float(areaCount));
+    const float pdfBrdf = surfaceCosine * kInvPi;
+    const float misWeight = powerHeuristic(pdfLight, pdfBrdf);
+
+    const vec3 emission = light.color.xyz * light.centerAndIntensity.w;
+    // brdf * emission * cosSurf / pdfLight = brdf * emission * cosSurf * areaCount * lightArea * cosLight / d^2
+    return brdf * emission * surfaceCosine * float(areaCount) * lightArea * lightCosine * misWeight / distanceSquared;
+}
+
+struct AreaLightHit {
+    float t;
+    vec3 contribution;
+    vec3 normal;
+    bool found;
+};
+
+// Intersects the ray against all area lights. If the closest hit is within maxT,
+// returns the MIS-weighted emission contribution for the BRDF sampling strategy.
+// `useMIS` should be false when there is no preceding BRDF sample (e.g. primary ray).
+AreaLightHit traceAreaLights(
+    vec3 origin,
+    vec3 direction,
+    float maxT,
+    float pdfBrdf,
+    bool useMIS)
+{
+    AreaLightHit result;
+    result.t = maxT;
+    result.contribution = vec3(0.0);
+    result.normal = vec3(0.0);
+    result.found = false;
+
+    const uint count = min(lights.counts.y, 8u);
+    int bestIdx = -1;
+    for (uint i = 0u; i < count; ++i) {
+        float t;
+        if (intersectAreaLight(origin, direction, lights.areaLights[i], t) && t < result.t) {
+            result.t = t;
+            bestIdx = int(i);
+        }
+    }
+
+    if (bestIdx < 0) {
+        return result;
+    }
+
+    const GpuAreaLight light = lights.areaLights[bestIdx];
+    const vec3 rightExtent = light.rightExtentAndDoubleSided.xyz;
+    const vec3 upExtent = light.upExtent.xyz;
+    const vec3 lightNormal = normalize(cross(rightExtent, upExtent));
+    const bool doubleSided = light.rightExtentAndDoubleSided.w >= 0.5;
+    float lightCosine = dot(lightNormal, -direction);
+    if (doubleSided) {
+        lightCosine = abs(lightCosine);
+    }
+    if (lightCosine <= 0.0) {
+        return result;
+    }
+
+    const float distanceSquared = result.t * result.t;
+    const float lightArea = 4.0 * length(cross(rightExtent, upExtent));
+    const float pdfLight = distanceSquared / (lightArea * lightCosine * float(count));
+    const float misWeight = useMIS ? powerHeuristic(pdfBrdf, pdfLight) : 1.0;
+
+    const vec3 emission = light.color.xyz * light.centerAndIntensity.w;
+    result.contribution = emission * misWeight;
+    result.normal = (dot(lightNormal, direction) < 0.0) ? lightNormal : -lightNormal;
+    result.found = true;
+    return result;
 }
 
 vec3 evaluateDirectLighting(Hit hit, inout uint rngState)
 {
-    vec3 directLighting = evaluateSunLight(hit);
+    const vec3 brdf = lambertianBrdf(hit.albedo);
+    // Sun and point lights are delta lights: BRDF sampling cannot generate these
+    // directions, so the MIS weight collapses to 1 and we use NEE alone.
+    vec3 directLighting = brdf * evaluateSunLight(hit);
 
     const uint pointLightCount = min(lights.counts.x, 8u);
-    for (uint lightIndex = 0u; lightIndex < pointLightCount; ++lightIndex) {
-        directLighting += evaluatePointLight(hit, lights.pointLights[lightIndex]);
+    if (pointLightCount > 0u) {
+        const uint lightIndex = min(uint(randomFloat(rngState) * float(pointLightCount)), pointLightCount - 1u);
+        directLighting +=
+            brdf * evaluatePointLight(hit, lights.pointLights[lightIndex]) * float(pointLightCount);
     }
 
     const uint areaLightCount = min(lights.counts.y, 8u);
-    for (uint lightIndex = 0u; lightIndex < areaLightCount; ++lightIndex) {
-        directLighting += evaluateAreaLight(hit, lights.areaLights[lightIndex], rngState);
+    if (areaLightCount > 0u) {
+        const uint lightIndex = min(uint(randomFloat(rngState) * float(areaLightCount)), areaLightCount - 1u);
+        directLighting +=
+            evaluateAreaLightMIS(hit, lights.areaLights[lightIndex], areaLightCount, brdf, rngState);
     }
 
     return directLighting;
 }
 
-vec3 tracePath(Ray ray, inout uint rngState)
+vec3 tracePath(Ray ray, inout uint rngState, out vec4 primaryGuide)
 {
     vec3 radiance = vec3(0.0);
     vec3 throughput = vec3(1.0);
+    bool primaryGuideWritten = false;
+    float prevPdfBrdf = 0.0;
+    bool prevSampledBrdf = false;
 
     for (uint bounce = 0u; bounce < max(pc.settings.z, 1u); ++bounce) {
         Hit hit;
         const bool hasHit = sceneIntersect(ray, hit);
-        const bool marchViewAtmosphere = atmosphereEnabled() && (bounce == 0u || !hasHit);
+        const float sceneT = hasHit ? hit.t : kFarDistance;
+
+        // BRDF sampling strategy contribution: detect rays that hit an area light
+        // before the next scene surface and add the MIS-weighted emission.
+        const AreaLightHit lightHit = traceAreaLights(
+            ray.origin,
+            ray.direction,
+            sceneT,
+            prevPdfBrdf,
+            prevSampledBrdf);
+        const bool hitLight = lightHit.found;
+        const float segmentEnd = hitLight ? lightHit.t : sceneT;
+
+        if (!primaryGuideWritten) {
+            if (hasHit) {
+                primaryGuide = vec4(hit.normal * 0.5 + 0.5, hit.t);
+            } else if (hitLight) {
+                primaryGuide = vec4(lightHit.normal * 0.5 + 0.5, lightHit.t);
+            } else {
+                primaryGuide = vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
+            }
+            primaryGuideWritten = true;
+        }
+
+        const bool marchViewAtmosphere =
+            atmosphereEnabled() && (bounce == 0u || (!hasHit && !hitLight));
+        vec3 segmentTransmittance = vec3(1.0);
         if (marchViewAtmosphere) {
-            vec3 segmentTransmittance = vec3(1.0);
             radiance += throughput * marchAtmosphereScattering(
                 ray.origin,
                 ray.direction,
-                hasHit ? hit.t : kFarDistance,
+                (hasHit || hitLight) ? segmentEnd : kFarDistance,
                 sunColor() * sunIntensity(),
                 segmentTransmittance);
             throughput *= segmentTransmittance;
         }
 
+        if (hitLight) {
+            radiance += throughput * lightHit.contribution;
+            break;
+        }
+
         if (!hasHit) {
             if (atmosphereEnabled()) {
-                radiance += throughput * renderAtmosphereSunDisc(ray.origin, ray.direction);
+                radiance += throughput * renderAtmosphereSunDisc(ray.direction, segmentTransmittance);
             } else {
                 radiance += throughput * skyBaseColor(ray.direction);
                 if (bounce == 0u) {
@@ -1042,14 +1271,24 @@ vec3 tracePath(Ray ray, inout uint rngState)
             break;
         }
 
-        radiance += throughput * hit.albedo * evaluateDirectLighting(hit, rngState) * kInvPi;
+        const float directLightingProbability = directLightingSampleProbability(bounce);
+        if (randomFloat(rngState) <= directLightingProbability) {
+            radiance +=
+                throughput *
+                evaluateDirectLighting(hit, rngState) /
+                directLightingProbability;
+        }
+
         throughput *= hit.albedo;
         if (max(throughput.r, max(throughput.g, throughput.b)) < 0.02) {
             break;
         }
 
         ray.origin = hit.position + hit.normal * kRayEpsilon;
-        ray.direction = sampleCosineHemisphere(hit.normal, rngState);
+        const vec3 newDir = sampleCosineHemisphere(hit.normal, rngState);
+        ray.direction = newDir;
+        prevPdfBrdf = max(dot(hit.normal, newDir), 0.0) * kInvPi;
+        prevSampledBrdf = true;
     }
 
     return radiance;
@@ -1058,33 +1297,6 @@ vec3 tracePath(Ray ray, inout uint rngState)
 float luminance(vec3 color)
 {
     return dot(color, vec3(0.2126, 0.7152, 0.0722));
-}
-
-vec4 primarySurfaceGuide(
-    vec2 pixel,
-    vec3 forward,
-    vec3 right,
-    vec3 up,
-    float aspectRatio,
-    float tanHalfFov)
-{
-    vec2 ndc = (pixel / pc.frameData.xy) * 2.0 - 1.0;
-    ndc.x *= aspectRatio;
-    ndc.y = -ndc.y;
-
-    Ray ray;
-    ray.origin = pc.cameraPosition.xyz;
-    ray.direction = normalize(
-        forward +
-        right * (ndc.x * tanHalfFov) +
-        up * (ndc.y * tanHalfFov));
-
-    Hit hit;
-    if (sceneIntersect(ray, hit)) {
-        return vec4(hit.normal * 0.5 + 0.5, hit.t);
-    }
-
-    return vec4(normalize(ray.direction) * 0.5 + 0.5, 0.0);
 }
 
 void main()
@@ -1102,20 +1314,14 @@ void main()
     const float aspectRatio = max(pc.frameData.w, 0.01);
     const float tanHalfFov = tan(radians(max(pc.frameData.z, 1.0)) * 0.5);
 
-    outGuide = primarySurfaceGuide(
-        pixel,
-        forward,
-        right,
-        up,
-        aspectRatio,
-        tanHalfFov);
-
     vec3 color = vec3(0.0);
     float luminanceSum = 0.0;
     float luminanceSquaredSum = 0.0;
     const uint sampleCount = max(pc.settings.y, 1u);
     for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
-        const vec2 jitter = vec2(randomFloat(rngState), randomFloat(rngState));
+        const vec2 jitter = sampleIndex == 0u
+            ? vec2(0.0)
+            : vec2(randomFloat(rngState), randomFloat(rngState));
         vec2 ndc = ((pixel + jitter) / pc.frameData.xy) * 2.0 - 1.0;
         ndc.x *= aspectRatio;
         ndc.y = -ndc.y;
@@ -1127,7 +1333,12 @@ void main()
             right * (ndc.x * tanHalfFov) +
             up * (ndc.y * tanHalfFov));
 
-        const vec3 sampleRadiance = tracePath(ray, rngState);
+        vec4 sampleGuide = vec4(0.0);
+        const vec3 sampleRadiance = tracePath(ray, rngState, sampleGuide);
+        if (sampleIndex == 0u) {
+            outGuide = sampleGuide;
+        }
+
         color += sampleRadiance;
 
         const float sampleLuminance = luminance(sampleRadiance);

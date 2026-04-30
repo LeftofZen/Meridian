@@ -121,6 +121,11 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         m_renderStateSnapshot.timing.renderDeltaMilliseconds,
         m_renderStateSnapshot.timing.framesPerSecond);
     ImGui::Text("Render CPU: %.3f ms", m_renderStateSnapshot.timing.renderCpuMilliseconds);
+    const VkExtent2D renderTargetExtent = m_context->getSwapchainExtent();
+    ImGui::Text(
+        "Render target: %u x %u",
+        renderTargetExtent.width,
+        renderTargetExtent.height);
     ImGui::Text(
         "Camera: (%.1f, %.1f, %.1f)",
         m_renderStateSnapshot.camera.position[0],
@@ -204,6 +209,29 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
             ImGuiSliderFlags_Logarithmic)) {
             m_pathTracerSettings->maxDdaSteps = maxDdaSteps;
             m_pathTracerSettings->clamp();
+        }
+
+        float lodFactor = m_pathTracerSettings->lodFactor;
+        if (ImGui::SliderFloat(
+                "LOD Factor",
+                &lodFactor,
+                0.0F,
+                0.2F,
+                "%.4f")) {
+            m_pathTracerSettings->lodFactor = lodFactor;
+            m_pathTracerSettings->clamp();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Coarsens octree traversal with distance.\n"
+                "Distance is measured from the camera to the center of the current\n"
+                "SVO node in voxel units.\n"
+                "Once a ray reaches occupied world data, the LOD factor limits\n"
+                "how many additional child levels get traversed based on that\n"
+                "node-to-camera distance. If descending further would exceed the\n"
+                "detail budget, the current\n"
+                "occupied node is shaded as a coarse hit instead of recursing deeper.\n"
+                "0 = off (full resolution).");
         }
 
         if (ImGui::Button(
