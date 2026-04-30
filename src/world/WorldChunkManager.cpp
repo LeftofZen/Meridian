@@ -866,8 +866,7 @@ void WorldChunkManager::dispatchChunkJobs()
                 std::shared_ptr<const TerrainHeightmapTile> heightmapTile;
                 if (heightmapGenerator != nullptr) {
                     ZoneScopedN("WorldChunkManager::generateHeightmapTile");
-                    heightmapTile = std::make_shared<TerrainHeightmapTile>(
-                        heightmapGenerator->generateTile(coord));
+                    heightmapTile = heightmapGenerator->generateTile(coord);
                 }
 
                 ChunkJobResult generatedChunk =
