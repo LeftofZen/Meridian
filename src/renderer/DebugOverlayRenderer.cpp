@@ -224,10 +224,13 @@ void DebugOverlayRenderer::buildFrameStatsWindow()
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip(
                 "Coarsens octree traversal with distance.\n"
-                "Distance is measured in voxels along the Manhattan (L1) axes\n"
-                "from the camera to the node entry point. A node whose extent\n"
-                "(always a power of 2 voxels) is smaller than\n"
-                "(LOD Factor * manhattan voxels) is treated as a solid leaf.\n"
+                "Distance is measured from the camera to the center of the current\n"
+                "SVO node in voxel units.\n"
+                "Once a ray reaches occupied world data, the LOD factor limits\n"
+                "how many additional child levels get traversed based on that\n"
+                "node-to-camera distance. If descending further would exceed the\n"
+                "detail budget, the current\n"
+                "occupied node is shaded as a coarse hit instead of recursing deeper.\n"
                 "0 = off (full resolution).");
         }
 

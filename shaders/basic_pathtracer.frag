@@ -625,8 +625,8 @@ float lodFactor()
 }
 
 // Walks down the first occupied child of an interior node until a leaf is found
-// and returns its material albedo. Used as an approximation when LOD coarsens
-// traversal at an interior node.
+// and returns its material albedo. Used when distance-based LOD stops further
+// descent at an occupied interior node.
 vec3 approximateNodeAlbedo(uint nodeIndex, uint chunkBaseIndex)
 {
     uint current = nodeIndex;
@@ -634,27 +634,33 @@ vec3 approximateNodeAlbedo(uint nodeIndex, uint chunkBaseIndex)
         if (nodeIsLeaf(current)) {
             return materialAlbedo(nodeMaterialId(current));
         }
+
         const uint mask = nodeChildMask(current);
         if (mask == 0u) {
             break;
         }
+
         bool descended = false;
-        for (uint c = 0u; c < 8u; ++c) {
-            if ((mask & (1u << c)) == 0u) {
+        for (uint childIndex = 0u; childIndex < 8u; ++childIndex) {
+            if ((mask & (1u << childIndex)) == 0u) {
                 continue;
             }
-            const uint childIdx = nodeChildIndex(current, c);
-            if (childIdx == kInvalidChildIndex) {
+
+            const uint childNodeIndex = nodeChildIndex(current, childIndex);
+            if (childNodeIndex == kInvalidChildIndex) {
                 continue;
             }
-            current = chunkBaseIndex + childIdx;
+
+            current = chunkBaseIndex + childNodeIndex;
             descended = true;
             break;
         }
+
         if (!descended) {
             break;
         }
     }
+
     return vec3(0.5);
 }
 
@@ -757,15 +763,15 @@ bool traverseChunkOctree(Ray ray, GpuChunk chunk, float tMin, float tMax, out Hi
         const vec3 nodeNormal = normalStack[stackSize];
 
         const bool isLeaf = nodeIsLeaf(nodeIndex);
-        // Manhattan voxel distance from the camera to the node's entry point.
-        // World units are voxels (1 unit = 1 voxel), so the L1 norm of the
-        // delta is the voxel count along the axis-aligned grid.
-        const vec3 entryPosition = ray.origin + ray.direction * nodeEnter;
-        const vec3 voxelDelta = abs(entryPosition - pc.cameraPosition.xyz);
-        const float manhattanVoxels = voxelDelta.x + voxelDelta.y + voxelDelta.z;
-        const bool atLodCutoff =
-            !isLeaf && lodFactor() > 0.0 && nodeExtent < lodFactor() * manhattanVoxels;
-        if (isLeaf || atLodCutoff) {
+        const vec3 nodeCenter = nodeMin + vec3(nodeExtent * 0.5);
+        const vec3 cameraToNode = nodeCenter - pc.cameraPosition.xyz;
+        const float cameraToNodeDistanceSquared = dot(cameraToNode, cameraToNode);
+        const float childExtent = nodeExtent * 0.5;
+        const float lodThreshold = lodFactor() * lodFactor() * cameraToNodeDistanceSquared;
+        const bool stopAtCurrentNode =
+            !isLeaf && lodFactor() > 0.0 && childExtent * childExtent < lodThreshold;
+
+        if (isLeaf || stopAtCurrentNode) {
             hit.found = true;
             hit.t = nodeEnter;
             hit.position = ray.origin + ray.direction * nodeEnter;
@@ -776,7 +782,6 @@ bool traverseChunkOctree(Ray ray, GpuChunk chunk, float tMin, float tMax, out Hi
             return true;
         }
 
-        const float childExtent = nodeExtent * 0.5;
         uint childNodeIndices[8];
         vec3 childMins[8];
         float childEnters[8];
